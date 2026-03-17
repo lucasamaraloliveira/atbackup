@@ -4,6 +4,7 @@ import { User, Language } from '../types';
 import { AuthService } from '../services/storageService';
 import { ShieldCheck, Globe, Eye, EyeOff, CheckCircle } from 'lucide-react';
 import { useTranslation } from '../utils/translations';
+import { MaskService } from '../utils/masks';
 
 interface AuthProps {
   onLogin: (user: User) => void;
@@ -142,7 +143,7 @@ const Auth: React.FC<AuthProps> = ({ onLogin, lang, setLang }) => {
                     <input 
                     type="text" 
                     value={cpfCnpj}
-                    onChange={e => setCpfCnpj(e.target.value)}
+                    onChange={e => setCpfCnpj(MaskService.maskCpfCnpj(e.target.value))}
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all placeholder:text-slate-600"
                     placeholder={t.auth.cpfCnpjPlaceholder}
                     required

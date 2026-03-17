@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, Language, LicenseType, UserRole } from '../types';
 import { AuthService } from '../services/storageService';
-import { Bell, ShieldAlert, CheckCircle, Clock, Trash2, Plus, X, RefreshCw, Users, ShieldCheck, AlertTriangle, RotateCcw, Search, CreditCard } from 'lucide-react';
+import { Bell, ShieldAlert, CheckCircle, Clock, Trash2, Plus, X, RefreshCw, Users, ShieldCheck, AlertTriangle, RotateCcw, Search, CreditCard, Edit2 } from 'lucide-react';
 import { useTranslation } from '../utils/translations';
+import { MaskService } from '../utils/masks';
 
 interface ClientManagerProps {
   lang: Language;
@@ -11,7 +12,7 @@ interface ClientManagerProps {
 const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
   const t = useTranslation(lang);
   const [users, setUsers] = useState<User[]>([]);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editingConfigUser, setEditingConfigUser] = useState<User | null>(null);
   const [thresholdInput, setThresholdInput] = useState<number>(15);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -20,6 +21,12 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
   const [newClientName, setNewClientName] = useState('');
   const [newClientCpfCnpj, setNewClientCpfCnpj] = useState('');
   const [newClientDuration, setNewClientDuration] = useState(30);
+
+  // Edit Client Modal State
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [clientToEdit, setClientToEdit] = useState<User | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCpfCnpj, setEditCpfCnpj] = useState('');
 
   // Renew Modal State
   const [renewUser, setRenewUser] = useState<User | null>(null);
@@ -79,9 +86,16 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
     return expiry.toLocaleDateString();
   };
 
-  const openEdit = (user: User) => {
-    setEditingUser(user);
+  const openConfigEdit = (user: User) => {
+    setEditingConfigUser(user);
     setThresholdInput(user.notificationThresholdDays || 15);
+  };
+
+  const openClientEdit = (user: User) => {
+    setClientToEdit(user);
+    setEditName(user.username);
+    setEditCpfCnpj(user.cpfCnpj || '');
+    setShowEditModal(true);
   };
 
   const triggerDelete = (user: User) => {
@@ -111,10 +125,23 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
   };
 
   const saveConfig = () => {
-    if (editingUser) {
-      AuthService.updateUserConfig(editingUser.id, { notificationThresholdDays: thresholdInput });
+    if (editingConfigUser) {
+      AuthService.updateUserConfig(editingConfigUser.id, { notificationThresholdDays: thresholdInput });
       loadUsers();
-      setEditingUser(null);
+      setEditingConfigUser(null);
+    }
+  };
+
+  const saveClientEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (clientToEdit) {
+      AuthService.updateUserConfig(clientToEdit.id, { 
+        username: editName,
+        cpfCnpj: editCpfCnpj
+      });
+      loadUsers();
+      setShowEditModal(false);
+      setClientToEdit(null);
     }
   };
 
@@ -199,10 +226,10 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
               <tr>
                 <th className="p-4">{t.clients.user}</th>
                 <th className="p-4">{t.auth.cpfCnpj}</th>
+                <th className="p-4">{t.clients.status}</th>
                 <th className="p-4">{t.clients.license}</th>
                 <th className="p-4">{t.clients.activated}</th>
                 <th className="p-4">{t.clients.expires}</th>
-                <th className="p-4">{t.clients.status}</th>
                 <th className="p-4">{t.clients.notify}</th>
                 <th className="p-4 text-right px-8">{t.clients.actions}</th>
               </tr>
@@ -212,37 +239,45 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
                 const status = getStatus(user);
                 return (
                   <tr key={user.id} className="hover:bg-slate-700/30 transition-colors group">
-                    <td className="p-4 font-bold text-white group-hover:text-blue-300 transition-colors">{user.username}</td>
+                    <td className="p-4 font-bold text-white group-hover:text-blue-300 transition-colors">
+                      <div className="flex flex-col">
+                        <span>{user.username}</span>
+                        {user.email && <span className="text-[10px] text-slate-500 font-normal">{user.email}</span>}
+                      </div>
+                    </td>
                     <td className="p-4 text-xs font-mono text-slate-400 group-hover:text-slate-100 transition-colors">{user.cpfCnpj || '-'}</td>
+                    <td className="p-4">
+                      {status === 'active' && <span className="flex items-center gap-1.5 text-green-400 bg-green-900/20 px-2.5 py-1 rounded text-[9px] font-black border border-green-800/30 uppercase tracking-wider"><ShieldCheck size={12} /> {t.clients.statusActive}</span>}
+                      {status === 'warning' && <span className="flex items-center gap-1.5 text-yellow-500 bg-yellow-900/20 px-2.5 py-1 rounded text-[9px] font-black border border-yellow-700/30 uppercase tracking-wider"><Clock size={12} /> {t.clients.statusWarning}</span>}
+                      {status === 'expired' && <span className="flex items-center gap-1.5 text-red-500 bg-red-900/20 px-2.5 py-1 rounded text-[9px] font-black border border-red-700/30 uppercase tracking-wider"><ShieldAlert size={12} /> {t.clients.statusExpired}</span>}
+                    </td>
                     <td className="p-4 font-mono text-[10px] text-slate-500 group-hover:text-slate-300 transition-colors">
                       {user.licenseType === LicenseType.TRIAL ? 
                         <span className="text-indigo-400 px-2.5 py-0.5 bg-indigo-900/20 border border-indigo-700/30 rounded-full font-bold uppercase tracking-tighter">{t.clients.trial}</span> 
                         : user.licenseKey}
                     </td>
-                    <td className="p-4 text-sm text-slate-500">
+                    <td className="p-4 text-sm text-slate-500 whitespace-nowrap">
                       {new Date(user.licenseActivatedAt || user.createdAt).toLocaleDateString()}
                     </td>
-                    <td className="p-4 text-sm text-slate-500">
+                    <td className="p-4 text-sm text-slate-500 whitespace-nowrap">
                       {getExpiryDate(user)}
-                    </td>
-                    <td className="p-4">
-                      {status === 'active' && <span className="flex items-center gap-1.5 text-green-400 bg-green-900/20 px-2.5 py-1 rounded text-[9px] font-black border border-green-800/30 uppercase tracking-wider"><ShieldCheck size={12} /> {t.clients.statusActive}</span>}
-                      {status === 'warning' && <span className="flex items-center gap-1.5 text-yellow-500 bg-yellow-900/20 px-2.5 py-1 rounded text-[9px] font-black border border-yellow-700/30 uppercase tracking-wider"><Clock size={12} /> {t.clients.statusWarning}</span>}
-                      {status === 'expired' && <span className="flex items-center gap-1.5 text-red-500 bg-red-900/20 px-2.5 py-1 rounded text-[9px] font-black border border-red-700/30 uppercase tracking-wider"><ShieldAlert size={12} /> {t.clients.statusExpired}</span>}
                     </td>
                     <td className="p-4 text-sm text-slate-400 whitespace-nowrap">
                       {user.notificationThresholdDays || 15} {t.clients.days}
                     </td>
                     <td className="p-4 text-right px-6 whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => setRenewUser(user)} className="p-2 text-slate-400 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-all" title={t.clients.renew}>
-                          <RefreshCw size={16} />
+                          <button onClick={() => openClientEdit(user)} className="p-2 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg transition-all" title={t.clients.editClient}>
+                            <Edit2 size={16} />
                           </button>
-                          <button onClick={() => openEdit(user)} className="p-2 text-slate-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-all" title={t.clients.configNotify}>
-                          <Bell size={16} />
+                          <button onClick={() => setRenewUser(user)} className="p-2 text-slate-400 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-all" title={t.clients.renew}>
+                            <RefreshCw size={16} />
+                          </button>
+                          <button onClick={() => openConfigEdit(user)} className="p-2 text-slate-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-all" title={t.clients.configNotify}>
+                            <Bell size={16} />
                           </button>
                           <button onClick={() => triggerDelete(user)} className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all" title={t.jobs.delete}>
-                          <Trash2 size={16} />
+                            <Trash2 size={16} />
                           </button>
                       </div>
                     </td>
@@ -296,7 +331,7 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
                     type="text"
                     required
                     value={newClientCpfCnpj}
-                    onChange={e => setNewClientCpfCnpj(e.target.value)}
+                    onChange={e => setNewClientCpfCnpj(MaskService.maskCpfCnpj(e.target.value))}
                     className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 pl-10 text-white outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono"
                     placeholder="000.000.000-00"
                   />
@@ -333,8 +368,57 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
         </div>
       )}
 
+      {/* Edit Client Modal */}
+      {showEditModal && clientToEdit && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-8 shadow-2xl relative animate-modal-pop">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold flex items-center gap-3">
+                  <div className="p-2 bg-blue-600/20 rounded-lg text-blue-400">
+                    <Edit2 size={20} />
+                  </div>
+                  {t.clients.editClient}
+              </h3>
+              <button onClick={() => setShowEditModal(false)} className="text-slate-500 hover:text-white"><X size={20} /></button>
+            </div>
+
+            <form onSubmit={saveClientEdit} className="space-y-5">
+              <div>
+                <label className="block text-slate-400 text-[10px] uppercase font-black mb-2 tracking-widest">{t.clients.username}</label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 text-[10px] uppercase font-black mb-2 tracking-widest">{t.auth.cpfCnpj}</label>
+                <div className="relative">
+                  <CreditCard size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type="text"
+                    required
+                    value={editCpfCnpj}
+                    onChange={e => setEditCpfCnpj(MaskService.maskCpfCnpj(e.target.value))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 pl-10 text-white outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-6 flex justify-end gap-2 border-t border-slate-800">
+                <button type="button" onClick={() => setShowEditModal(false)} className="px-5 py-2.5 rounded-xl text-slate-500 hover:text-white hover:bg-slate-800 transition-all font-bold uppercase text-[10px] tracking-widest">{t.destinations.cancel}</button>
+                <button type="submit" className="px-8 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-black shadow-lg shadow-blue-900/40 transition-all active:scale-95 uppercase text-[11px] tracking-widest">{t.clients.save}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Notification Config Modal */}
-      {editingUser && (
+      {editingConfigUser && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-8 shadow-2xl relative animate-modal-pop">
             <h3 className="text-xl font-bold mb-2 flex items-center gap-3">
@@ -343,7 +427,7 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
                 </div>
                 {t.clients.configNotify}
             </h3>
-            <p className="text-sm text-slate-500 mb-6">{t.clients.user}: <span className="text-white font-bold font-mono">{editingUser.username}</span></p>
+            <p className="text-sm text-slate-500 mb-6">{t.clients.user}: <span className="text-white font-bold font-mono">{editingConfigUser.username}</span></p>
 
             <label className="block text-slate-400 text-[10px] uppercase font-black mb-2 tracking-widest">{t.clients.days}</label>
             <input
@@ -351,12 +435,12 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
               min="1"
               max="60"
               value={thresholdInput}
-              onChange={(e) => setThresholdInput(parseInt(e.target.value))}
+              onChange={(e) => setThresholdInput(parseInt(MaskService.onlyDigits(e.target.value)) || 0)}
               className="w-full bg-slate-950 border border-slate-700 rounded-xl p-4 mb-8 text-white outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-black text-center text-2xl shadow-inner"
             />
 
             <div className="flex justify-end gap-2 pt-6 border-t border-slate-800">
-              <button onClick={() => setEditingUser(null)} className="px-5 py-2.5 rounded-xl text-slate-500 hover:text-white hover:bg-slate-800 transition-all font-bold uppercase text-[10px] tracking-widest">{t.destinations.cancel}</button>
+              <button onClick={() => setEditingConfigUser(null)} className="px-5 py-2.5 rounded-xl text-slate-500 hover:text-white hover:bg-slate-800 transition-all font-bold uppercase text-[10px] tracking-widest">{t.destinations.cancel}</button>
               <button onClick={saveConfig} className="px-8 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-white font-black shadow-lg shadow-indigo-900/40 transition-all active:scale-95 uppercase text-[11px] tracking-widest">{t.clients.save}</button>
             </div>
           </div>
@@ -399,7 +483,7 @@ const ClientManager: React.FC<ClientManagerProps> = ({ lang }) => {
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4 animate-in fade-in duration-300">
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-slate-900 border border-red-500/30 rounded-2xl max-w-sm w-full p-8 shadow-2xl text-center animate-modal-pop">
             <div className="mx-auto w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center text-red-500 mb-6 font-black scale-up">
                <AlertTriangle size={36} />

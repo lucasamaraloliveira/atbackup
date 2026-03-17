@@ -39,7 +39,8 @@ export enum DestinationType {
   WASABI = 'Wasabi Hot Cloud Storage',
   BACKBLAZE = 'Backblaze B2',
   DROPBOX = 'Dropbox',
-  DIGITALOCEAN = 'DigitalOcean Spaces'
+  DIGITALOCEAN = 'DigitalOcean Spaces',
+  NETWORK = 'Network Shared Folder'
 }
 
 export interface Destination {

@@ -40,6 +40,8 @@ export const translations = {
       trialMode: 'Trial Mode',
       daysLeft: 'days left',
       logout: 'Logout',
+      reports: 'Reports',
+      unrestricted: 'Unlimited Access',
       loading: 'Loading Solution...',
       presentation: 'Welcome to CloudGuard. Preparing your dashboard...'
     },
@@ -159,7 +161,21 @@ export const translations = {
       clientId: 'Client ID',
       clientSecret: 'Client Secret',
       folderId: 'Root Folder ID (Optional)',
-      comingSoon: 'Coming Soon'
+      networkPath: 'Network Share Path (e.g., \\\\server\\share)',
+      comingSoon: 'Coming Soon',
+      providers: {
+        local: 'Local Disk',
+        ftp: 'FTP/SFTP',
+        aws: 'AWS S3',
+        azure: 'Azure Blob Storage',
+        google: 'Google Cloud Storage',
+        googleDrive: 'Google Drive',
+        wasabi: 'Wasabi Hot Cloud Storage',
+        backblaze: 'Backblaze B2',
+        dropbox: 'Dropbox',
+        digitalocean: 'DigitalOcean Spaces',
+        network: 'Network Shared Folder'
+      }
     },
     history: {
       title: 'Execution History',
@@ -173,6 +189,18 @@ export const translations = {
       viewDetails: 'View Log',
       integrityOk: 'INTEGRITY OK',
       integrityFailed: 'FAILED'
+    },
+    reports: {
+      title: 'Reporting Center',
+      description: 'Analyze your backup environment with detailed insights.',
+      lastRun: 'Last generated: {date}',
+      export: 'Export (PDF/CSV)',
+      types: {
+         jobs: 'Backup Job Summary',
+         storage: 'Storage Capacity Report',
+         licenses: 'License Expiration Tracker',
+         history: 'Full Audit Log'
+      }
     },
     admin: {
       title: 'License Management',
@@ -213,10 +241,12 @@ export const translations = {
       actions: 'Actions',
       deleteConfirm: 'Are you sure you want to delete this client? This cannot be undone.',
       renew: 'Renew/Extend',
+      editClient: 'Edit Client',
       searchPlaceholder: "Search client by name..."
     },
     settings: {
       title: 'Account Settings',
+      licenseInfo: 'License Information',
       status: 'License Status',
       expiresIn: 'Expires in',
       activate: 'Activate License',
@@ -284,6 +314,8 @@ export const translations = {
       trialMode: 'Modo Trial',
       daysLeft: 'dias restantes',
       logout: 'Sair',
+      reports: 'Relatórios',
+      unrestricted: 'Acesso Irrestrito',
       loading: 'Carregando Solução...',
       presentation: 'Bem-vindo ao CloudGuard. Preparando seu painel...'
     },
@@ -403,7 +435,21 @@ export const translations = {
       clientId: 'Client ID',
       clientSecret: 'Client Secret',
       folderId: 'ID da Pasta Raiz (Opcional)',
-      comingSoon: 'Em Breve'
+      networkPath: 'Caminho Compartilhado (ex: \\\\servidor\\pasta)',
+      comingSoon: 'Em Breve',
+      providers: {
+        local: 'Disco Local',
+        ftp: 'Servidor FTP/SFTP',
+        aws: 'Amazon AWS S3',
+        azure: 'Microsoft Azure Blob',
+        google: 'Google Cloud Storage',
+        googleDrive: 'Google Drive',
+        wasabi: 'Wasabi Hot Storage',
+        backblaze: 'Backblaze B2',
+        dropbox: 'Dropbox',
+        digitalocean: 'DigitalOcean Spaces',
+        network: 'Pasta Compartilhada de Rede'
+      }
     },
     history: {
       title: 'Histórico de Execuções',
@@ -417,6 +463,18 @@ export const translations = {
       viewDetails: 'Ver Log',
       integrityOk: 'INTEGRIDADE OK',
       integrityFailed: 'FALHA'
+    },
+    reports: {
+      title: 'Central de Relatórios',
+      description: 'Analise seu ambiente de backup com insights detalhados.',
+      lastRun: 'Última extração: {date}',
+      export: 'Exportar (PDF/CSV)',
+      types: {
+         jobs: 'Resumo das Tarefas',
+         storage: 'Relatório de Armazenamento',
+         licenses: 'Status de Licenciamento',
+         history: 'Log de Auditoria Completo'
+      }
     },
     admin: {
       title: 'Gestão de Licenças',
@@ -457,10 +515,12 @@ export const translations = {
       actions: 'Ações',
       deleteConfirm: 'Tem certeza que deseja excluir este cliente? Isso não pode ser desfeito.',
       renew: 'Renovar/Estender',
+      editClient: 'Editar Cliente',
       searchPlaceholder: "Buscar cliente pelo nome..."
     },
     settings: {
       title: 'Configurações da Conta',
+      licenseInfo: 'Informações de Licenciamento',
       status: 'Status da Licença',
       expiresIn: 'Expira em',
       activate: 'Ativar Licença',

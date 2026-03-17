@@ -45,6 +45,24 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
     credentials: {}
   });
 
+  const getProviderName = (type: DestinationType) => {
+    const p = t.destinations.providers;
+    switch (type) {
+      case DestinationType.LOCAL: return p.local;
+      case DestinationType.FTP: return p.ftp;
+      case DestinationType.AWS: return p.aws;
+      case DestinationType.AZURE: return p.azure;
+      case DestinationType.GOOGLE: return p.google;
+      case DestinationType.GOOGLE_DRIVE: return p.googleDrive;
+      case DestinationType.WASABI: return p.wasabi;
+      case DestinationType.BACKBLAZE: return p.backblaze;
+      case DestinationType.DROPBOX: return p.dropbox;
+      case DestinationType.DIGITALOCEAN: return p.digitalocean;
+      case DestinationType.NETWORK: return p.network;
+      default: return type;
+    }
+  };
+
   const resetForm = () => {
     setNewDest({
       type: DestinationType.AWS,
@@ -65,7 +83,7 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
       onAdd({
         id: newDest.id || crypto.randomUUID(), // Keep ID if editing, else generate
         name: newDest.name,
-        type: newDest.type,
+        type: newDest.type as DestinationType,
         pathOrBucket: newDest.pathOrBucket || '',
         credentials: newDest.credentials || {}
       });
@@ -285,6 +303,39 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
           </>
         );
 
+      case DestinationType.NETWORK:
+        return (
+          <>
+            <div className="md:col-span-3">
+              <label className="block text-sm text-slate-400 mb-1">{t.destinations.networkPath}</label>
+              <input
+                className="w-full bg-slate-900 border border-slate-600 rounded p-2 focus:border-blue-500 outline-none font-mono"
+                placeholder="\\192.168.1.50\Backups"
+                value={newDest.pathOrBucket}
+                onChange={e => setNewDest({ ...newDest, pathOrBucket: e.target.value })}
+              />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-sm text-slate-400 mb-1">{t.destinations.user}</label>
+              <input
+                className="w-full bg-slate-900 border border-slate-600 rounded p-2 focus:border-blue-500 outline-none"
+                placeholder="DOMAIN\User"
+                value={newDest.credentials?.user || ''}
+                onChange={e => updateCredential('user', e.target.value)}
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm text-slate-400 mb-1">{t.destinations.password}</label>
+              <input
+                type="password"
+                className="w-full bg-slate-900 border border-slate-600 rounded p-2 focus:border-blue-500 outline-none"
+                value={newDest.credentials?.password || ''}
+                onChange={e => updateCredential('password', e.target.value)}
+              />
+            </div>
+          </>
+        );
+
       case DestinationType.LOCAL:
       default:
         return (
@@ -340,7 +391,7 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
             <div className="bg-slate-950 p-4 rounded-lg border border-slate-700 font-mono text-xs text-green-400 mb-6">
               <p className="mb-2 text-slate-500 border-b border-slate-800 pb-1">Mount Configuration:</p>
               <p>Target: {mountModalDest.name}</p>
-              <p>Type: {mountModalDest.type}</p>
+              <p>Type: {getProviderName(mountModalDest.type)}</p>
               <p>Bucket: {mountModalDest.pathOrBucket}</p>
               <p className="mt-2 text-yellow-300"># CloudGuard Agent required to mount as local disk</p>
             </div>
@@ -387,14 +438,14 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
                   onClick={() => setShowProviderSelect(!showProviderSelect)}
                   className="w-full bg-slate-900 border border-slate-600 rounded p-2 focus:border-blue-500 outline-none flex items-center justify-between text-left"
                 >
-                  <span className="truncate">{newDest.type}</span>
+                  <span className="truncate">{newDest.type ? getProviderName(newDest.type as DestinationType) : ''}</span>
                   <ChevronDown size={16} className={`transition-transform ${showProviderSelect ? 'rotate-180' : ''}`} />
                 </button>
 
                 {showProviderSelect && (
                   <div className="absolute top-full left-0 w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-[70] py-1 max-h-60 overflow-y-auto custom-scrollbar">
                     {Object.values(DestinationType).map(dt => {
-                      const isEnabled = dt === DestinationType.LOCAL || dt === DestinationType.WASABI;
+                      const isEnabled = dt === DestinationType.LOCAL || dt === DestinationType.WASABI || dt === DestinationType.NETWORK;
                       return (
                         <button
                           key={dt}
@@ -411,7 +462,7 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
                           } ${newDest.type === dt ? 'bg-blue-600/20 text-blue-400' : ''}`}
                           title={!isEnabled ? t.destinations.comingSoon : ''}
                         >
-                          <span className="truncate">{dt}</span>
+                          <span className="truncate">{getProviderName(dt)}</span>
                           {!isEnabled && <Lock size={12} className="shrink-0 ml-2" />}
                         </button>
                       );
@@ -454,6 +505,7 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
             <div className="flex justify-between items-start mb-4">
               <div className="p-3 bg-slate-700/50 rounded-lg group-hover:bg-blue-900 group-hover:text-blue-200 transition-colors">
                 {dest.type === DestinationType.LOCAL ? <HardDrive size={24} /> :
+                  dest.type === DestinationType.NETWORK ? <Network size={24} /> :
                   dest.type === DestinationType.FTP ? <Server size={24} /> : <Cloud size={24} />}
               </div>
               <div className="flex space-x-1">
@@ -475,7 +527,7 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
               </div>
             </div>
             <h3 className="font-bold text-lg mb-1">{dest.name}</h3>
-            <p className="text-blue-400 text-sm font-medium mb-3">{dest.type}</p>
+            <p className="text-blue-400 text-sm font-medium mb-3">{getProviderName(dest.type)}</p>
 
             <div className="space-y-1">
               <p className="text-slate-400 text-xs font-mono bg-slate-900 p-2 rounded border border-slate-800 truncate" title={dest.pathOrBucket}>

@@ -11,7 +11,8 @@ import {
   ShieldCheck, 
   History,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  FileText
 } from 'lucide-react';
 import { useTranslation } from '../utils/translations';
 
@@ -91,6 +92,16 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, currentPage, 
             />
           )}
 
+          {(user.role === UserRole.ROOT || !user.allowedMenus || user.allowedMenus.includes('reports')) && (
+            <NavItem 
+              icon={<FileText size={20} />} 
+              label={t.layout.reports} 
+              active={currentPage === 'reports'} 
+              onClick={() => onNavigate('reports')} 
+              isCollapsed={isCollapsed}
+            />
+          )}
+
           {(user.role === UserRole.ROOT || !user.allowedMenus || user.allowedMenus.includes('settings')) && (
             <NavItem 
               icon={<Settings size={20} />} 
@@ -126,7 +137,7 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, currentPage, 
               <div className="overflow-hidden">
                 <p className="text-sm font-medium truncate">{user.username}</p>
                 <p className={`text-xs truncate ${isExpired ? 'text-red-400' : 'text-green-400'}`}>
-                  {user.role === UserRole.ROOT ? t.layout.superAdmin : user.licenseType}
+                  {user.role === UserRole.ROOT ? t.layout.unrestricted : user.licenseType}
                 </p>
               </div>
             ) : (

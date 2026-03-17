@@ -11,6 +11,7 @@ import JobEditor from '@/components/JobEditor';
 import AdminPanel from '@/components/AdminPanel';
 import ClientManager from '@/components/ClientManager';
 import HistoryView from '@/components/HistoryView';
+import ReportsView from '@/components/ReportsView';
 import { PermissionsPanel } from '@/components/PermissionsPanel';
 import { useTranslation } from '@/utils/translations';
 import { LucideIcon } from 'lucide-react'; // For types if needed
@@ -550,6 +551,16 @@ export default function Home() {
 
       {page === 'dashboard' && <Dashboard jobs={jobs} destinations={destinations} lang={lang} />}
       
+      {page === 'reports' && (
+        <ReportsView 
+          lang={lang} 
+          jobs={jobs} 
+          destinations={destinations} 
+          history={history} 
+          users={user.role === UserRole.ROOT ? AuthService.getAllUsers() : []}
+        />
+      )}
+      
       
       
       
@@ -659,14 +670,14 @@ export default function Home() {
                         <div className="bg-slate-800/80 backdrop-blur p-8 rounded-xl border border-slate-700/50 shadow-xl">
                             <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-slate-100">
                                 <ShieldAlertIcon size={24} className="text-amber-400"/>
-                                {t.settings.status}
+                                {t.settings.licenseInfo}
                             </h2>
                             <div className="flex flex-col space-y-4">
                                 <div className="flex items-center space-x-3">
-                                    <div className={`px-4 py-1.5 rounded-lg text-sm font-bold shadow-sm ${user.licenseType === LicenseType.PRO ? 'bg-green-900/50 text-green-400 border border-green-500/20' : 'bg-yellow-900/50 text-yellow-400 border border-yellow-500/20'}`}>
-                                        {user.licenseType}
+                                    <div className={`px-4 py-1.5 rounded-lg text-sm font-bold shadow-sm ${user.role === UserRole.ROOT ? 'bg-blue-900/50 text-blue-400 border border-blue-500/20' : (user.licenseType === LicenseType.PRO ? 'bg-green-900/50 text-green-400 border border-green-500/20' : 'bg-yellow-900/50 text-yellow-400 border border-yellow-500/20')}`}>
+                                        {user.role === UserRole.ROOT ? t.layout.unrestricted : user.licenseType}
                                     </div>
-                                    {user.licenseType === LicenseType.TRIAL && (
+                                    {user.licenseType === LicenseType.TRIAL && user.role !== UserRole.ROOT && (
                                         <div className="flex items-center gap-2">
                                             <span className="text-slate-400 text-sm">{t.settings.expiresIn} 15 {t.layout.daysLeft}</span>
                                             <button onClick={forceTrialExpiry} title="Encurtar Trial para 1 Minuto" className="text-xs bg-amber-500/20 text-amber-400 px-2 py-1 rounded hover:bg-amber-500/30 transition-colors border border-amber-500/30">Validar (1min)</button>
