@@ -128,9 +128,20 @@ async function runBackupTask(taskId: string, job: BackupJob, destinations: Desti
                     '-v' // Verbose
                 ];
 
-                if (dest.type === DestinationType.WASABI || dest.type === DestinationType.AWS || dest.type === DestinationType.DIGITALOCEAN) {
-                    const provider = dest.type === DestinationType.WASABI ? 'Wasabi' : 
-                                   dest.type === DestinationType.DIGITALOCEAN ? 'DigitalOcean' : 'AWS';
+                const isS3Compatible = [
+                    DestinationType.WASABI, 
+                    DestinationType.AWS, 
+                    DestinationType.DIGITALOCEAN, 
+                    DestinationType.BACKBLAZE, 
+                    DestinationType.GOOGLE
+                ].includes(dest.type);
+
+                if (isS3Compatible) {
+                    let provider = 'AWS';
+                    if (dest.type === DestinationType.WASABI) provider = 'Wasabi';
+                    if (dest.type === DestinationType.DIGITALOCEAN) provider = 'DigitalOcean';
+                    if (dest.type === DestinationType.BACKBLAZE) provider = 'Backblaze';
+                    if (dest.type === DestinationType.GOOGLE) provider = 'GoogleCloudStorage';
                     
                     args.push('--s3-provider', provider);
                     if (creds.accessKeyId) args.push('--s3-access-key-id', creds.accessKeyId);

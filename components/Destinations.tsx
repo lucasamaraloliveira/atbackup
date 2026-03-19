@@ -41,6 +41,10 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; id?: string } | null>(null);
 
+  // Drive Selection for Mount
+  const [selectedLetter, setSelectedLetter] = useState('M');
+  const DRIVE_LETTERS = ['G', 'M', 'S', 'T', 'W', 'X', 'Y', 'Z'];
+
   // State for the form
   const [newDest, setNewDest] = useState<Partial<Destination>>({
     type: DestinationType.AWS,
@@ -128,6 +132,56 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
     } catch (error) {
       console.error('Failed to open native browser', error);
     }
+  };
+
+  const handleDownloadAgent = () => {
+    window.location.href = '/api/agent/download';
+  };
+
+  const handleDownloadOneClickScript = async (dest: Destination, letter: string) => {
+    try {
+        const response = await fetch('/api/agent/generate-script', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dest, letter })
+        });
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Ativar_Disco_${dest.name.replace(/\s+/g, '_')}_${letter}.bat`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+    } catch (error) {
+        console.error('Falha ao baixar script automatizado', error);
+    }
+  };
+
+  const handleCopyMountCommand = (dest: Destination) => {
+    let command = '';
+    const creds = dest.credentials || {};
+    
+    if (dest.type === DestinationType.NETWORK) {
+        // net use [Drive] [Path] [Password] /user:[User] /persistent:yes
+        command = `taskkill /F /IM CloudGuardAgent_Setup.exe /IM rclone.exe /T 2>$null; net use M: /delete /y 2>$null; net use M: "${dest.pathOrBucket}" ${creds.password || 'PASSWORD'} /user:${creds.user || 'USER'} /persistent:yes`;
+    } else {
+        // Cloud via rclone flags (most reliable)
+        const bucket = dest.pathOrBucket;
+        let provider = 'AWS';
+        if (dest.type === DestinationType.WASABI) provider = 'Wasabi';
+        if (dest.type === DestinationType.DIGITALOCEAN) provider = 'DigitalOcean';
+        if (dest.type === DestinationType.BACKBLAZE) provider = 'Backblaze';
+        if (dest.type === DestinationType.GOOGLE) provider = 'GoogleCloudStorage';
+        
+        const endpoint = creds.endpoint || (dest.type === DestinationType.WASABI ? 's3.wasabisys.com' : '');
+        const region = creds.region || 'us-east-1';
+
+        command = `taskkill /F /IM CloudGuardAgent_Setup.exe /IM rclone.exe /T 2>$null; net use M: /delete /y 2>$null; .\\CloudGuardAgent_Setup.exe mount :s3:${bucket} M: --s3-provider ${provider} --s3-access-key-id ${creds.accessKeyId || ''} --s3-secret-access-key ${creds.secretAccessKey || ''} --s3-region ${region} --s3-endpoint ${endpoint} --vfs-cache-mode full --dir-cache-time 20s --volname "CloudGuard Cloud"`;
+    }
+    
+    navigator.clipboard.writeText(command);
+    alert('Comando TOTALMENTE configurado e copiado! Basta colar no terminal (Admin) e apertar Enter.');
   };
 
   const updateCredential = (key: string, value: string) => {
@@ -419,13 +473,46 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
               <p className="mt-2 text-yellow-300"># CloudGuard Agent required to mount as local disk</p>
             </div>
 
-            <div className="flex flex-col gap-3">
-              <button className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded flex items-center justify-center gap-2 transition-all">
-                <Download size={18} />
-                {t.destinations.downloadAgent}
-              </button>
-              <button className="w-full bg-slate-700 hover:bg-slate-600 text-slate-200 py-2 rounded text-sm">
-                {t.destinations.copyCommand}
+            <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50 mb-6">
+              <label className="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-3 text-center">
+                Escolha a letra da unidade
+              </label>
+              <div className="flex flex-wrap justify-center gap-2">
+                {DRIVE_LETTERS.map(L => (
+                  <button
+                    key={L}
+                    onClick={() => setSelectedLetter(L)}
+                    className={`w-10 h-10 rounded-lg font-bold transition-all border ${
+                      selectedLetter === L 
+                        ? 'bg-blue-600 border-blue-400 text-white shadow-[0_0_15px_rgba(59,130,246,0.5)]' 
+                        : 'bg-slate-800 border-slate-700 text-slate-500 hover:border-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {L}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-4">
+              <button 
+                onClick={() => handleDownloadOneClickScript(mountModalDest, selectedLetter)}
+                className="group relative w-full overflow-hidden rounded-2xl p-[1px] transition-all hover:scale-[1.02] active:scale-[0.98] shadow-2xl shadow-blue-900/20"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-600 via-indigo-500 to-blue-600 bg-[length:200%_100%] animate-shimmer" />
+                <div className="relative flex flex-col items-center justify-center gap-3 bg-slate-900/90 py-6 px-4 rounded-2xl backdrop-blur-xl group-hover:bg-slate-900/50 transition-colors">
+                  <div className="flex items-center gap-3">
+                     <div className="p-2 bg-blue-600/20 rounded-lg text-blue-400">
+                        <CheckCircle size={28} />
+                     </div>
+                     <span className="text-xl font-black bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+                        ATIVAR DISCO VIRTUAL
+                     </span>
+                  </div>
+                  <p className="text-xs text-slate-400 font-medium px-4 text-center leading-relaxed max-w-sm">
+                    O script será configurado automaticamente para a unidade <span className="text-blue-400 font-bold">{selectedLetter}:</span> e ficará pronto para uso em um clique.
+                  </p>
+                </div>
               </button>
             </div>
           </div>
@@ -468,7 +555,15 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
                 {showProviderSelect && (
                   <div className="absolute top-full left-0 w-full mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-[70] py-1 max-h-60 overflow-y-auto custom-scrollbar">
                     {Object.values(DestinationType).map(dt => {
-                      const isEnabled = dt === DestinationType.LOCAL || dt === DestinationType.WASABI || dt === DestinationType.NETWORK;
+                      const isEnabled = [
+                        DestinationType.LOCAL, 
+                        DestinationType.WASABI, 
+                        DestinationType.NETWORK,
+                        DestinationType.AWS,
+                        DestinationType.DIGITALOCEAN,
+                        DestinationType.BACKBLAZE,
+                        DestinationType.GOOGLE
+                      ].includes(dt);
                       return (
                         <button
                           key={dt}

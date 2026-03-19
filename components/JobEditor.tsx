@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { BackupJob, BackupType, Destination, SourceType, Language } from '../types';
 import { Save, X, Wand2, Search, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
-import { generateBackupScript } from '../services/geminiService';
+// import { generateBackupScript } from '../services/geminiService'; // Moved to API
 import { DataService } from '../services/storageService';
 import { useTranslation } from '../utils/translations';
 
@@ -85,9 +85,24 @@ const JobEditor: React.FC<JobEditorProps> = ({ job, destinations, onSave, onCanc
 
   const handleGenerateScript = async () => {
     setLoadingAi(true);
-    const script = await generateBackupScript(formData, destinations);
-    setGeneratedScript(script);
-    setLoadingAi(false);
+    try {
+        const response = await fetch('/api/ai/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job: formData, destinations, lang })
+        });
+        const data = await response.json();
+        if (data.success) {
+            setGeneratedScript(data.script);
+        } else {
+            setGeneratedScript(`# Error: ${data.message || 'Falha ao gerar script'}`);
+        }
+    } catch (error) {
+        console.error('AI Error:', error);
+        setGeneratedScript("# Erro de rede ao tentar contato com a IA.");
+    } finally {
+        setLoadingAi(false);
+    }
   };
 
   const handleNativeBrowse = async () => {
@@ -467,7 +482,7 @@ const JobEditor: React.FC<JobEditorProps> = ({ job, destinations, onSave, onCanc
             </button>
           </div>
           {generatedScript && (
-            <div className="bg-slate-950 p-4 rounded-lg font-mono text-xs text-green-400 whitespace-pre-wrap h-40 overflow-y-auto border border-slate-700/50 custom-scrollbar">
+            <div className="bg-slate-950 p-4 rounded-lg font-mono text-[11px] text-green-400 whitespace-pre-wrap h-80 overflow-y-auto border border-slate-700/50 custom-scrollbar leading-relaxed">
               {generatedScript}
             </div>
           )}

@@ -86,15 +86,12 @@ export default function Home() {
   const [showExpiryModal, setShowExpiryModal] = useState(false);
   const [daysRemaining, setDaysRemaining] = useState(0);
 
-  // Backup Progress State
-  const [showProgressModal, setShowProgressModal] = useState(false);
-  const [backupStatus, setBackupStatus] = useState<'RUNNING' | 'SUCCESS' | 'ERROR'>('RUNNING');
-  const [backupResults, setBackupResults] = useState<BackupResult[]>([]);
-  const [activeJob, setActiveJob] = useState<BackupJob | null>(null);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  // Parallel Backup State
+  const [activeTasks, setActiveTasks] = useState<Record<string, any>>({});
+  const [currentModalTaskId, setCurrentModalTaskId] = useState<string | null>(null);
+  
   const [history, setHistory] = useState<any[]>([]);
-  const [prepSteps, setPrepSteps] = useState<{msg: string, status: 'pending' | 'active' | 'done'}[]>([]);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortControllersRef = useRef<Record<string, AbortController>>({});
 
   // Progress Modal View Mode
   const [showRealTime, setShowRealTime] = useState(false);
@@ -129,9 +126,6 @@ export default function Home() {
     if (!user) return; // Only stop if no user is totally logged in
     
     const interval = setInterval(() => {
-      // Avoid starting a new scheduled job if one is currently in progress
-      if (backupStatus === 'RUNNING' && activeJob !== null) return;
-      
       // Actively check for license expiry during runtime
       const freshUser = AuthService.getCurrentUser();
       if (freshUser && freshUser.licenseType === LicenseType.EXPIRED && user.licenseType !== LicenseType.EXPIRED) {
@@ -151,6 +145,10 @@ export default function Home() {
       
       for (const job of currentJobs) {
         if (!job.scheduleCron || job.status === 'RUNNING') continue;
+        
+        // Skip if this job is already being handled in activeTasks
+        if (Object.values(activeTasks).some(t => t.jobId === job.id && t.status === 'RUNNING')) continue;
+
         const parts = job.scheduleCron.split(' ');
         if (parts.length < 5) continue;
         
@@ -168,14 +166,12 @@ export default function Home() {
         // Check if recently run (within last 60 seconds) to avoid loops
         if (job.lastRun && (Date.now() - job.lastRun < 60000)) continue;
         
-        // Conditions met, trigger it!
         runJob(job.id);
-        break; // Only start one at a time
       }
-    }, 15000); // Check every 15 seconds to be more responsive
+    }, 15000); 
     
     return () => clearInterval(interval);
-  }, [user, backupStatus, activeJob]);
+  }, [user, activeTasks]);
 
   const loadData = () => {
     setJobs(DataService.getJobs());
@@ -210,17 +206,16 @@ export default function Home() {
       }
   };
 
-  const interruptBackup = async () => {
-    if (activeTaskId) {
-      try {
-        await fetch(`/api/backup/stop/${activeTaskId}`, { method: 'POST' });
-        // Polling will detect the status change to ERROR/Interrupted
-      } catch (e) {
-        console.error('Failed to stop backup', e);
-      }
+  const interruptBackup = async (taskId: string) => {
+    try {
+      await fetch(`/api/backup/stop/${taskId}`, { method: 'POST' });
+    } catch (e) {
+      console.error('Failed to stop backup', e);
     }
-    if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
+    
+    if (abortControllersRef.current[taskId]) {
+        abortControllersRef.current[taskId].abort();
+        delete abortControllersRef.current[taskId];
     }
   };
 
@@ -300,9 +295,14 @@ export default function Home() {
 
         if (task.status === 'SUCCESS' || task.status === 'ERROR') {
           clearInterval(interval);
-          setBackupStatus(task.status);
-          setBackupResults(task.results || []);
-          setPrepSteps(prev => prev.map(s => ({ ...s, status: 'done' as const })));
+          
+          setActiveTasks(prev => {
+            const current = { ...prev[taskId] };
+            current.status = task.status;
+            current.results = task.results || [];
+            current.prepSteps = current.prepSteps.map((s: any) => ({ ...s, status: 'done' }));
+            return { ...prev, [taskId]: current };
+          });
 
           // Update Jobs list status
           setJobs(prev => prev.map(j => {
@@ -323,7 +323,7 @@ export default function Home() {
           const historyEntry = {
             id: Math.random().toString(36).substring(2, 9),
             jobId: jobId,
-            jobName: activeJob?.name || 'Job',
+            jobName: activeTasks[taskId]?.jobName || 'Job',
             timestamp: Date.now(),
             status: task.status,
             fileCount: task.results?.reduce((acc: number, curr: any) => acc + (curr.fileCount || 0), 0) || 0,
@@ -335,23 +335,24 @@ export default function Home() {
           DataService.saveHistoryEntry(historyEntry);
           setHistory(DataService.getHistory());
         } else {
-           // During RUNNING, we can show live file count if available
-           if (task.processedFiles?.length > 0 || task.results?.length > 0) {
-              setBackupResults(task.results || []);
-              // We'll use task.processedFiles directly in the UI if in real-time mode
-              setActiveTaskId(taskId); // Ensure we have the latest ID
+           // During RUNNING, update live stats
+           setActiveTasks(prev => {
+              const current = { ...prev[taskId] };
+              if (!current) return prev;
               
-              // Mock results for real-time visualization if they don't exist yet but files do
-              if ((!task.results || task.results.length === 0) && task.processedFiles.length > 0) {
-                 setBackupResults([{ 
+              const results = task.results || [];
+              if (results.length === 0 && task.processedFiles?.length > 0) {
+                 results.push({ 
                    destination: lang === 'pt' ? 'Sincronizando...' : 'Syncing...', 
                    status: 'SUCCESS (MOCK)', 
                    processedFiles: task.processedFiles 
-                 }]);
-              } else if (task.results && task.results.length > 0) {
-                 setBackupResults(task.results);
+                 });
               }
-           }
+              
+              current.results = results;
+              current.processedFiles = task.processedFiles;
+              return { ...prev, [taskId]: current };
+           });
         }
       } catch (error) {
         console.error('Polling error:', error);
@@ -366,87 +367,95 @@ export default function Home() {
     const job = freshJobs.find(j => j.id === id);
     if (!job) return;
 
-    setActiveJob(job);
-    setBackupStatus('RUNNING');
-    setBackupResults([]);
-    
-    setPrepSteps([
+    // Create a temporary task ID to show prep steps immediately
+    const tempId = `temp-${Date.now()}`;
+    const initialPrep = [
       { msg: lang === 'pt' ? 'Validando integridade da estrutura...' : 'Validating structure integrity...', status: 'active' },
       { msg: lang === 'pt' ? 'Analisando alterações incrementais...' : 'Scanning for incremental changes...', status: 'pending' },
       { msg: lang === 'pt' ? 'Autenticando e preparando destinos...' : 'Authenticating destinations...', status: 'pending' },
       { msg: lang === 'pt' ? 'Iniciando motor de transferência (Multi-thread)...' : 'Starting transfer engine...', status: 'pending' }
-    ]);
+    ];
+
+    setActiveTasks(prev => ({
+      ...prev,
+      [tempId]: {
+        jobId: job.id,
+        jobName: job.name,
+        status: 'RUNNING',
+        results: [],
+        prepSteps: initialPrep,
+        sourcePath: job.sourcePath,
+        destinationIds: job.destinationIds
+      }
+    }));
+    setCurrentModalTaskId(tempId);
 
     // Animate prep steps
-    setTimeout(() => {
-        setPrepSteps(prev => {
-            if (prev.every(s => s.status === 'done' || s.status === 'pending')) {
-                if (!prev.some(s => s.status === 'active')) return prev;
-            }
-            const next = [...prev];
-            if (next[0]) next[0].status = 'done';
-            if (next[1]) next[1].status = 'active';
-            return next;
-        });
-    }, 1000);
+    const animateNext = (stepIdx: number) => {
+       setActiveTasks(prev => {
+          if (!prev[tempId]) return prev;
+          const next = { ...prev[tempId] };
+          const steps = [...next.prepSteps];
+          if (steps[stepIdx-1]) steps[stepIdx-1].status = 'done';
+          if (steps[stepIdx]) steps[stepIdx].status = 'active';
+          next.prepSteps = steps;
+          return { ...prev, [tempId]: next };
+       });
+    };
 
-    setTimeout(() => {
-        setPrepSteps(prev => {
-            if (prev.every(s => s.status === 'done' || s.status === 'pending')) {
-                if (!prev.some(s => s.status === 'active')) return prev;
-            }
-            const next = [...prev];
-            if (next[1]) next[1].status = 'done';
-            if (next[2]) next[2].status = 'active';
-            return next;
-        });
-    }, 2000);
+    setTimeout(() => animateNext(1), 1000);
+    setTimeout(() => animateNext(2), 2000);
 
-    setShowProgressModal(true);
-
-    const updatedJobs = jobs.map(j => {
-      if (j.id === id) return { ...j, status: 'RUNNING' as const };
-      return j;
-    });
-    setJobs(updatedJobs);
+    setJobs(prev => prev.map(j => j.id === id ? { ...j, status: 'RUNNING' } : j));
 
     try {
       const freshDestinations = DataService.getDestinations();
       const jobDestinations = freshDestinations.filter(d => job.destinationIds.includes(d.id));
       
-      abortControllerRef.current = new AbortController();
+      const controller = new AbortController();
+      abortControllersRef.current[tempId] = controller;
 
       const response = await fetch('/api/backup/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job, destinations: jobDestinations }),
-        signal: abortControllerRef.current.signal
+        signal: controller.signal
       });
 
       const data = await response.json();
 
       if (data.success && data.taskId) {
-        setActiveTaskId(data.taskId);
-        // Advanced to step 4 when API confirms start
-        setPrepSteps(prev => {
-            const next = [...prev];
-            if (next[2]) next[2].status = 'done';
-            if (next[3]) next[3].status = 'active';
-            return next;
+        // Migration from tempId to real taskId
+        setActiveTasks(prev => {
+          const newState = { ...prev };
+          const taskData = { ...newState[tempId], taskId: data.taskId };
+          // Step 4 active
+          taskData.prepSteps[2].status = 'done';
+          taskData.prepSteps[3].status = 'active';
+          
+          delete newState[tempId];
+          newState[data.taskId] = taskData;
+          return newState;
         });
         
-        // Start polling for real results
+        delete abortControllersRef.current[tempId];
+        abortControllersRef.current[data.taskId] = controller;
+        setCurrentModalTaskId(data.taskId);
+
         pollTaskStatus(data.taskId, id);
       } else {
         throw new Error(data.error || 'Falha ao iniciar processo');
       }
     } catch (error) {
        console.error('Backup Initiation Error:', error);
-       setBackupStatus('ERROR');
-       setPrepSteps(prev => prev.map(s => ({ ...s, status: 'done' as const })));
-       
-       const msg = error instanceof Error ? error.message : 'Erro crítico';
-       setBackupResults([{ destination: 'Geral', status: 'ERROR', message: msg }]);
+       setActiveTasks(prev => {
+          const next = { ...prev[tempId] };
+          if (!next) return prev;
+          next.status = 'ERROR';
+          next.prepSteps = next.prepSteps.map((s: any) => ({ ...s, status: 'done' }));
+          next.results = [{ destination: 'Geral', status: 'ERROR', message: error instanceof Error ? error.message : 'Erro crítico' }];
+          return { ...prev, [tempId]: next };
+       });
     }
   };
 
@@ -834,27 +843,45 @@ export default function Home() {
         </div>
       )}
       {/* Backup Progress Modal */}
-      {showProgressModal && activeJob && (
+      {currentModalTaskId && activeTasks[currentModalTaskId] && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
           <div className="bg-slate-900 border border-slate-700 w-full max-w-3xl max-h-[90vh] rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300 flex flex-col">
             {/* Header */}
             <div className="bg-slate-800/50 p-6 border-b border-slate-700 flex justify-between items-center shrink-0">
               <div className="flex items-center gap-3">
-                <div className={`p-2.5 rounded-xl ${backupStatus === 'RUNNING' ? 'bg-blue-500/20 text-blue-400' : backupStatus === 'SUCCESS' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                   {backupStatus === 'RUNNING' ? <LoaderIcon className="animate-spin" size={28} /> : backupStatus === 'SUCCESS' ? <CheckCircleIcon size={28} /> : <AlertTriangleIcon size={28} />}
+                <div className={`p-2.5 rounded-xl ${activeTasks[currentModalTaskId].status === 'RUNNING' ? 'bg-blue-500/20 text-blue-400' : activeTasks[currentModalTaskId].status === 'SUCCESS' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                   {activeTasks[currentModalTaskId].status === 'RUNNING' ? <LoaderIcon className="animate-spin" size={28} /> : activeTasks[currentModalTaskId].status === 'SUCCESS' ? <CheckCircleIcon size={28} /> : <AlertTriangleIcon size={28} />}
                 </div>
                 <div>
                   <h3 className="text-xl sm:text-2xl font-black text-white tracking-tight">
-                    {backupStatus === 'RUNNING' ? 'Executando Backup...' : backupStatus === 'SUCCESS' ? 'Backup Concluído!' : 'Falha no Backup'}
+                    {activeTasks[currentModalTaskId].status === 'RUNNING' ? 'Executando Backup...' : activeTasks[currentModalTaskId].status === 'SUCCESS' ? 'Backup Concluído!' : 'Falha no Backup'}
                   </h3>
-                  <p className="text-sm text-slate-400 font-medium">{activeJob.name}</p>
+                  <p className="text-sm text-slate-400 font-medium">{activeTasks[currentModalTaskId].jobName}</p>
                 </div>
               </div>
-              {backupStatus !== 'RUNNING' && (
-                <button onClick={() => setShowProgressModal(false)} className="text-slate-500 hover:text-white transition-colors p-2 hover:bg-white/5 rounded-full">
-                  <XIcon size={24} />
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setCurrentModalTaskId(null)} 
+                  className="text-slate-400 hover:text-white transition-all p-2 hover:bg-white/5 rounded-lg flex items-center gap-2 border border-slate-700"
+                  title="Minimizar para rodapé"
+                >
+                  <ArrowDownIcon size={18} />
+                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline">Minimizar</span>
                 </button>
-              )}
+                {activeTasks[currentModalTaskId].status !== 'RUNNING' && (
+                  <button onClick={() => {
+                    const tid = currentModalTaskId;
+                    setCurrentModalTaskId(null);
+                    setActiveTasks(prev => {
+                      const next = { ...prev };
+                      delete next[tid];
+                      return next;
+                    });
+                  }} className="text-slate-500 hover:text-white transition-colors p-2 hover:bg-white/5 rounded-lg">
+                    <XIcon size={24} />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Body */}
@@ -867,13 +894,13 @@ export default function Home() {
                     <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Origem dos Dados</p>
                   </div>
                   <p className="text-xs sm:text-sm font-mono break-all text-blue-400 pl-3.5 leading-relaxed bg-blue-500/5 p-3 rounded-lg border border-blue-500/10">
-                    {activeJob.sourcePath}
+                    {activeTasks[currentModalTaskId].sourcePath}
                   </p>
                 </div>
 
                 <div className="flex justify-center -my-3 relative z-10">
                     <div className="bg-slate-900 p-2 rounded-full border border-slate-700 shadow-xl">
-                        <div className={backupStatus === 'RUNNING' ? 'animate-bounce' : ''}>
+                        <div className={activeTasks[currentModalTaskId].status === 'RUNNING' ? 'animate-bounce' : ''}>
                            <ArrowDownIcon className="text-slate-400 w-5 h-5" />
                         </div>
                     </div>
@@ -885,7 +912,7 @@ export default function Home() {
                     <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
                   </div>
                   <div className="space-y-2 pl-3.5">
-                    {destinations.filter(d => activeJob.destinationIds.includes(d.id)).map(d => (
+                    {destinations.filter(d => activeTasks[currentModalTaskId].destinationIds?.includes(d.id)).map(d => (
                       <p key={d.id} className="text-xs sm:text-sm font-mono break-all text-green-400 leading-relaxed bg-green-500/5 p-3 rounded-lg border border-green-500/10 w-full text-left">
                         {d.pathOrBucket}
                       </p>
@@ -898,18 +925,18 @@ export default function Home() {
               <div className="space-y-4 px-1">
                 <div className="flex justify-between items-center text-xs sm:text-sm">
                   <span className="text-slate-400 font-bold uppercase tracking-widest text-[10px]">Progresso da Migração</span>
-                  <span className={`font-black tracking-tight ${backupStatus === 'ERROR' ? 'text-red-400' : 'text-white'}`}>
-                    {backupStatus === 'RUNNING' ? 'Sincronizando blocos...' : backupStatus === 'SUCCESS' ? '100% - OK' : 'Ocorreu um erro'}
+                  <span className={`font-black tracking-tight ${activeTasks[currentModalTaskId].status === 'ERROR' ? 'text-red-400' : 'text-white'}`}>
+                    {activeTasks[currentModalTaskId].status === 'RUNNING' ? 'Sincronizando blocos...' : activeTasks[currentModalTaskId].status === 'SUCCESS' ? '100% - OK' : 'Ocorreu um erro'}
                   </span>
                 </div>
                 <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden shadow-inner">
                   <div 
-                    className={`h-full transition-all duration-1000 ease-out rounded-full ${backupStatus === 'RUNNING' ? 'w-2/3 bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.3)]' : backupStatus === 'SUCCESS' ? 'w-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.3)]' : 'w-1/3 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.3)]'}`}
+                    className={`h-full transition-all duration-1000 ease-out rounded-full ${activeTasks[currentModalTaskId].status === 'RUNNING' ? 'w-2/3 bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.3)]' : activeTasks[currentModalTaskId].status === 'SUCCESS' ? 'w-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.3)]' : 'w-1/3 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.3)]'}`}
                   ></div>
                 </div>
               </div>
 
-              {/* Detailed Process Logs (NEW SECTION) */}
+              {/* Detailed Process Logs */}
               <div className="space-y-4 pt-2">
                 <div className="flex items-center justify-between px-1">
                    <div className="flex items-center gap-2">
@@ -925,34 +952,34 @@ export default function Home() {
                 </div>
 
                 <div className="bg-slate-950/40 rounded-xl border border-slate-800/50 p-4 space-y-3">
-                   {/* Preparation Steps - Shown only if NOT in real-time or if still early */}
+                   {/* Preparation Steps */}
                    {!showRealTime && (
                      <div className="space-y-2.5">
-                        {prepSteps.map((step, idx) => (
-                          <div key={idx} className="flex items-center justify-between group">
-                            <div className="flex items-center gap-3">
-                               {step.status === 'done' ? (
-                                 <CheckCircleIcon size={14} className="text-emerald-500" />
-                               ) : step.status === 'active' ? (
-                                 <LoaderIcon size={14} className="text-blue-400 animate-spin" />
-                               ) : (
-                                 <div className="w-3.5 h-3.5 rounded-full border border-slate-700"></div>
-                               )}
-                               <span className={`text-[11px] font-medium transition-colors ${step.status === 'done' ? 'text-slate-400' : step.status === 'active' ? 'text-blue-300' : 'text-slate-600'}`}>
-                                 {step.msg}
-                               </span>
-                            </div>
-                            {step.status === 'done' && <span className="text-[9px] font-black text-emerald-500/60 uppercase">OK</span>}
-                          </div>
+                        {activeTasks[currentModalTaskId].prepSteps?.map((step: any, idx: number) => (
+                           <div key={idx} className="flex items-center justify-between group">
+                             <div className="flex items-center gap-3">
+                                {step.status === 'done' ? (
+                                  <CheckCircleIcon size={14} className="text-emerald-500" />
+                                ) : step.status === 'active' ? (
+                                  <LoaderIcon size={14} className="text-blue-400 animate-spin" />
+                                ) : (
+                                  <div className="w-3.5 h-3.5 rounded-full border border-slate-700"></div>
+                                )}
+                                <span className={`text-[11px] font-medium transition-colors ${step.status === 'done' ? 'text-slate-400' : step.status === 'active' ? 'text-blue-300' : 'text-slate-600'}`}>
+                                  {step.msg}
+                                </span>
+                             </div>
+                             {step.status === 'done' && <span className="text-[9px] font-black text-emerald-500/60 uppercase">OK</span>}
+                           </div>
                         ))}
                      </div>
                    )}
 
-                   {/* Active File Migration - Actual Live Stream */}
-                   {backupStatus === 'RUNNING' && showRealTime && (
+                   {/* Active File Migration */}
+                   {activeTasks[currentModalTaskId].status === 'RUNNING' && showRealTime && (
                      <div className="space-y-2 animate-in fade-in duration-300">
-                        {backupResults.flatMap(r => r.processedFiles || []).length > 0 ? (
-                          backupResults.flatMap(r => r.processedFiles || []).map((file, idx) => (
+                        {activeTasks[currentModalTaskId].results.flatMap((r: any) => r.processedFiles || []).length > 0 ? (
+                          activeTasks[currentModalTaskId].results.flatMap((r: any) => r.processedFiles || []).map((file: string, idx: number) => (
                             <div key={idx} className="flex items-center gap-3 bg-blue-500/5 p-2 rounded-lg border border-blue-500/10 animate-in slide-in-from-bottom-2 duration-300">
                                <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></div>
                                <span className="text-[11px] font-mono text-blue-300 truncate flex-1">{file}</span>
@@ -969,7 +996,7 @@ export default function Home() {
                    )}
 
                    {/* Standard Running View */}
-                   {backupStatus === 'RUNNING' && !showRealTime && (
+                   {activeTasks[currentModalTaskId].status === 'RUNNING' && !showRealTime && (
                      <div className="pt-3 mt-3 border-t border-slate-800/50 space-y-3 animate-in fade-in duration-700">
                         <div className="flex items-center justify-between">
                            <div className="flex items-center gap-2">
@@ -979,7 +1006,6 @@ export default function Home() {
                               </span>
                            </div>
                         </div>
-                        {/* Fake animated file list for better visual feedback during wait */}
                         <div className="space-y-2">
                            {[1, 2].map((i) => (
                               <div key={i} className="flex items-center gap-3 bg-white/5 p-2 rounded-lg border border-white/5 opacity-50">
@@ -995,9 +1021,9 @@ export default function Home() {
                    )}
 
                    {/* Real processed files after success */}
-                   {backupStatus === 'SUCCESS' && backupResults.length > 0 && (
+                   {activeTasks[currentModalTaskId].status === 'SUCCESS' && activeTasks[currentModalTaskId].results.length > 0 && (
                      <div className="pt-3 mt-3 border-t border-slate-800/50 space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
-                        {backupResults.flatMap(r => r.processedFiles || []).slice(0, 10).map((file, idx) => (
+                        {activeTasks[currentModalTaskId].results.flatMap((r: any) => r.processedFiles || []).slice(0, 10).map((file: string, idx: number) => (
                           <div key={idx} className="flex items-center gap-3 bg-emerald-500/5 p-2 rounded-lg border border-emerald-500/10 animate-in slide-in-from-left-2 duration-300">
                              <CheckCircleIcon size={12} className="text-emerald-500" />
                              <span className="text-[11px] font-mono text-emerald-400 truncate flex-1">{file}</span>
@@ -1009,27 +1035,22 @@ export default function Home() {
                              </div>
                           </div>
                         ))}
-                        {(backupResults.flatMap(r => r.processedFiles || []).length > 10) && (
-                           <p className="text-[10px] text-center text-slate-500 py-1">
-                             + {backupResults.flatMap(r => r.processedFiles || []).length - 10} {lang === 'pt' ? 'outros arquivos migrados' : 'other files migrated'}
-                           </p>
-                        )}
                      </div>
                    )}
                 </div>
               </div>
 
               {/* Results Log */}
-              {backupResults.length > 0 && (
+              {activeTasks[currentModalTaskId].results.length > 0 && (
                 <div className="space-y-3 animate-in slide-in-from-top-4 duration-500">
                   <div className="flex justify-between items-center px-1">
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Relatório de Integridade</p>
                     <div className="text-[9px] bg-blue-500/10 text-blue-400 px-3 py-1 rounded-full border border-blue-500/20 font-bold tracking-tight">
-                      {backupResults.reduce((acc, curr) => acc + (curr.fileCount || 0), 0)} Arquivos Sincronizados
+                      {activeTasks[currentModalTaskId].results.reduce((acc: number, curr: any) => acc + (curr.fileCount || 0), 0)} Arquivos Sincronizados
                     </div>
                   </div>
                   <div className="space-y-3">
-                    {backupResults.map((res, i) => (
+                    {activeTasks[currentModalTaskId].results.map((res: any, i: number) => (
                       <div key={i} className={`p-4 rounded-xl border transition-all duration-300 ${res.status === 'ERROR' ? 'bg-red-500/5 border-red-500/20' : 'bg-slate-900/80 border-slate-700/50 shadow-lg'}`}>
                         <div className="flex items-center justify-between mb-3">
                            <div className="flex items-center gap-3">
@@ -1038,42 +1059,11 @@ export default function Home() {
                               </div>
                               <span className={`text-sm font-black tracking-tight ${res.status === 'ERROR' ? 'text-red-400' : 'text-slate-100'}`}>{res.destination}</span>
                            </div>
-                           {res.status !== 'ERROR' && res.integrity && (
-                             <span className="text-[9px] bg-emerald-500 text-emerald-950 px-2 py-0.5 rounded-full font-black uppercase tracking-tighter shadow-lg shadow-emerald-500/20">
-                                Verificado
-                             </span>
-                           )}
                         </div>
-
-                        {res.processedFiles && res.processedFiles.length > 0 && (
-                          <div className="mb-4 space-y-2">
-                             <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest px-1">Itens Sincronizados</p>
-                             <div className="max-h-40 overflow-y-auto custom-scrollbar bg-slate-950/40 rounded-lg border border-slate-700/30 p-2 space-y-1">
-                               {res.processedFiles.map((file, idx) => (
-                                 <div key={idx} className="flex items-center gap-2 py-1 px-2 hover:bg-white/5 rounded transition-colors group">
-                                   {file.includes('.') ? (
-                                     <ServerIcon size={12} className="text-slate-500 group-hover:text-blue-400" />
-                                   ) : (
-                                     <ServerIcon size={12} className="text-amber-500/60 group-hover:text-amber-400" />
-                                   )}
-                                   <span className="text-[11px] font-mono text-slate-400 group-hover:text-slate-200 truncate" title={file}>
-                                     {file}
-                                   </span>
-                                 </div>
-                               ))}
-                             </div>
-                          </div>
-                        )}
-
                         <div className="flex justify-between items-center">
                            <p className="text-xs text-slate-400 font-medium leading-relaxed max-w-[85%]">
                              {res.status === 'ERROR' ? res.message : `Backup concluído: ${res.fileCount} arquivo(s) processados e validados.`}
                            </p>
-                           {res.status !== 'ERROR' && (
-                             <div className="flex gap-1">
-                               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]"></div>
-                             </div>
-                           )}
                         </div>
                       </div>
                     ))}
@@ -1084,23 +1074,73 @@ export default function Home() {
 
             {/* Footer */}
             <div className="p-6 bg-slate-800/30 border-t border-slate-700 flex justify-end items-center gap-4 shrink-0">
-              {backupStatus === 'RUNNING' && (
+              {activeTasks[currentModalTaskId].status === 'RUNNING' && (
                 <button 
-                  onClick={interruptBackup}
+                  onClick={() => interruptBackup(currentModalTaskId!)}
                   className="px-6 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-300 border border-red-500/20"
                 >
                   Interromper Execução
                 </button>
               )}
               <button 
-                onClick={() => setShowProgressModal(false)}
-                disabled={backupStatus === 'RUNNING'}
-                className={`px-8 py-2.5 rounded-xl font-black text-sm uppercase tracking-widest transition-all duration-300 ${backupStatus === 'RUNNING' ? 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-xl shadow-blue-900/40 transform hover:-translate-y-0.5 active:translate-y-0'}`}
+                onClick={() => {
+                  if (activeTasks[currentModalTaskId].status !== 'RUNNING') {
+                    const tid = currentModalTaskId;
+                    setActiveTasks(prev => {
+                      const next = { ...prev };
+                      delete next[tid];
+                      return next;
+                    });
+                  }
+                  setCurrentModalTaskId(null);
+                }}
+                className={`px-8 py-2.5 rounded-xl font-black text-sm uppercase tracking-widest transition-all duration-300 ${activeTasks[currentModalTaskId].status === 'RUNNING' ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-xl shadow-blue-900/40 transform hover:-translate-y-0.5 active:translate-y-0' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-xl shadow-blue-900/40 transform hover:-translate-y-0.5 active:translate-y-0'}`}
               >
-                {backupStatus === 'RUNNING' ? 'Aguarde Finalização' : 'Fechar Relatório'}
+                {activeTasks[currentModalTaskId].status === 'RUNNING' ? 'Continuar em Background' : 'Fechar Relatório'}
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Background Task Bar - Floating Footer Manager */}
+      {Object.keys(activeTasks).length > 0 && !currentModalTaskId && (
+        <div className="fixed bottom-6 right-6 z-[90] flex flex-col items-end gap-3 pointer-events-none">
+           {Object.entries(activeTasks).map(([tid, task]) => (
+             <div 
+               key={tid} 
+               onClick={() => setCurrentModalTaskId(tid)}
+               className="pointer-events-auto bg-slate-900/90 backdrop-blur-xl border border-blue-500/30 rounded-2xl p-4 shadow-2xl flex items-center gap-4 cursor-pointer hover:border-blue-400 hover:scale-105 transition-all animate-in slide-in-from-bottom-10"
+             >
+                <div className={`p-2 rounded-lg ${task.status === 'RUNNING' ? 'bg-blue-500/20 text-blue-400' : task.status === 'SUCCESS' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                   {task.status === 'RUNNING' ? <LoaderIcon className="animate-spin" size={20} /> : task.status === 'SUCCESS' ? <CheckCircleIcon size={20} /> : <AlertTriangleIcon size={20} />}
+                </div>
+                <div className="min-w-[150px]">
+                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 leading-none mb-1">Backup em Curso</p>
+                   <p className="text-sm font-bold text-white leading-tight">{task.jobName}</p>
+                   {task.status === 'RUNNING' && (
+                     <div className="mt-2 h-1 w-full bg-slate-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500 w-1/2 animate-pulse"></div>
+                     </div>
+                   )}
+                </div>
+                {task.status !== 'RUNNING' && (
+                   <button 
+                     onClick={(e) => {
+                       e.stopPropagation();
+                       setActiveTasks(prev => {
+                         const next = { ...prev };
+                         delete next[tid];
+                         return next;
+                       });
+                     }}
+                     className="text-slate-500 hover:text-white"
+                   >
+                     <XIcon size={16} />
+                   </button>
+                )}
+             </div>
+           ))}
         </div>
       )}
     </Layout>
