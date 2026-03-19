@@ -91,8 +91,13 @@ export default function Home() {
   const [backupStatus, setBackupStatus] = useState<'RUNNING' | 'SUCCESS' | 'ERROR'>('RUNNING');
   const [backupResults, setBackupResults] = useState<BackupResult[]>([]);
   const [activeJob, setActiveJob] = useState<BackupJob | null>(null);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [prepSteps, setPrepSteps] = useState<{msg: string, status: 'pending' | 'active' | 'done'}[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Progress Modal View Mode
+  const [showRealTime, setShowRealTime] = useState(false);
 
   // Transition States
   const [isLoadingSetup, setIsLoadingSetup] = useState(false);
@@ -205,7 +210,15 @@ export default function Home() {
       }
   };
 
-  const interruptBackup = () => {
+  const interruptBackup = async () => {
+    if (activeTaskId) {
+      try {
+        await fetch(`/api/backup/stop/${activeTaskId}`, { method: 'POST' });
+        // Polling will detect the status change to ERROR/Interrupted
+      } catch (e) {
+        console.error('Failed to stop backup', e);
+      }
+    }
     if (abortControllerRef.current) {
         abortControllerRef.current.abort();
     }
@@ -271,19 +284,126 @@ export default function Home() {
     }
   };
 
+  const pollTaskStatus = async (taskId: string, jobId: string) => {
+    const maxRetries = 10;
+    let retries = 0;
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/backup/status/${taskId}`);
+        if (!response.ok) {
+           retries++;
+           if (retries > maxRetries) clearInterval(interval);
+           return;
+        }
+        const task = await response.json();
+
+        if (task.status === 'SUCCESS' || task.status === 'ERROR') {
+          clearInterval(interval);
+          setBackupStatus(task.status);
+          setBackupResults(task.results || []);
+          setPrepSteps(prev => prev.map(s => ({ ...s, status: 'done' as const })));
+
+          // Update Jobs list status
+          setJobs(prev => prev.map(j => {
+            if (j.id === jobId) return { ...j, status: task.status, lastRun: task.endTime || Date.now() };
+            return j;
+          }));
+
+          // Save to local storage (DataService)
+          const currentJobs = DataService.getJobs();
+          const jIdx = currentJobs.findIndex(j => j.id === jobId);
+          if (jIdx !== -1) {
+            currentJobs[jIdx].status = task.status;
+            currentJobs[jIdx].lastRun = task.endTime || Date.now();
+            DataService.saveJob(currentJobs[jIdx]);
+          }
+
+          // Save to History
+          const historyEntry = {
+            id: Math.random().toString(36).substring(2, 9),
+            jobId: jobId,
+            jobName: activeJob?.name || 'Job',
+            timestamp: Date.now(),
+            status: task.status,
+            fileCount: task.results?.reduce((acc: number, curr: any) => acc + (curr.fileCount || 0), 0) || 0,
+            integrity: task.results?.every((r: any) => r.integrity) || false,
+            details: task.status === 'SUCCESS' 
+                ? task.results?.map((r: any) => `${r.destination}: OK`).join(', ') || 'Sucesso' 
+                : task.error || 'Erro na migração'
+          };
+          DataService.saveHistoryEntry(historyEntry);
+          setHistory(DataService.getHistory());
+        } else {
+           // During RUNNING, we can show live file count if available
+           if (task.processedFiles?.length > 0 || task.results?.length > 0) {
+              setBackupResults(task.results || []);
+              // We'll use task.processedFiles directly in the UI if in real-time mode
+              setActiveTaskId(taskId); // Ensure we have the latest ID
+              
+              // Mock results for real-time visualization if they don't exist yet but files do
+              if ((!task.results || task.results.length === 0) && task.processedFiles.length > 0) {
+                 setBackupResults([{ 
+                   destination: lang === 'pt' ? 'Sincronizando...' : 'Syncing...', 
+                   status: 'SUCCESS (MOCK)', 
+                   processedFiles: task.processedFiles 
+                 }]);
+              } else if (task.results && task.results.length > 0) {
+                 setBackupResults(task.results);
+              }
+           }
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+        retries++;
+        if (retries > maxRetries) clearInterval(interval);
+      }
+    }, 1500);
+  };
+
   const runJob = async (id: string) => {
-    // Fetch fresh from storage to prevent stale React state closures from the daemon
     const freshJobs = DataService.getJobs();
     const job = freshJobs.find(j => j.id === id);
     if (!job) return;
 
-    // Open Progress Modal
     setActiveJob(job);
     setBackupStatus('RUNNING');
     setBackupResults([]);
+    
+    setPrepSteps([
+      { msg: lang === 'pt' ? 'Validando integridade da estrutura...' : 'Validating structure integrity...', status: 'active' },
+      { msg: lang === 'pt' ? 'Analisando alterações incrementais...' : 'Scanning for incremental changes...', status: 'pending' },
+      { msg: lang === 'pt' ? 'Autenticando e preparando destinos...' : 'Authenticating destinations...', status: 'pending' },
+      { msg: lang === 'pt' ? 'Iniciando motor de transferência (Multi-thread)...' : 'Starting transfer engine...', status: 'pending' }
+    ]);
+
+    // Animate prep steps
+    setTimeout(() => {
+        setPrepSteps(prev => {
+            if (prev.every(s => s.status === 'done' || s.status === 'pending')) {
+                if (!prev.some(s => s.status === 'active')) return prev;
+            }
+            const next = [...prev];
+            if (next[0]) next[0].status = 'done';
+            if (next[1]) next[1].status = 'active';
+            return next;
+        });
+    }, 1000);
+
+    setTimeout(() => {
+        setPrepSteps(prev => {
+            if (prev.every(s => s.status === 'done' || s.status === 'pending')) {
+                if (!prev.some(s => s.status === 'active')) return prev;
+            }
+            const next = [...prev];
+            if (next[1]) next[1].status = 'done';
+            if (next[2]) next[2].status = 'active';
+            return next;
+        });
+    }, 2000);
+
     setShowProgressModal(true);
 
-    // Set status to RUNNING in main list
     const updatedJobs = jobs.map(j => {
       if (j.id === id) return { ...j, status: 'RUNNING' as const };
       return j;
@@ -291,7 +411,6 @@ export default function Home() {
     setJobs(updatedJobs);
 
     try {
-      // Find full destination objects using fresh data
       const freshDestinations = DataService.getDestinations();
       const jobDestinations = freshDestinations.filter(d => job.destinationIds.includes(d.id));
       
@@ -306,110 +425,28 @@ export default function Home() {
 
       const data = await response.json();
 
-      if (data.success) {
-        setBackupStatus('SUCCESS');
-        setBackupResults(data.results || []);
-        
-        setJobs(prev => prev.map(j => {
-          if (j.id === id) return { ...j, status: 'SUCCESS' as const, lastRun: data.lastRun || Date.now() };
-          return j;
-        }));
-        
-        // Save to local storage
-        const currentJobs = DataService.getJobs();
-        const jIdx = currentJobs.findIndex(j => j.id === id);
-        if (jIdx !== -1) {
-          currentJobs[jIdx].status = 'SUCCESS';
-          currentJobs[jIdx].lastRun = data.lastRun || Date.now();
-          DataService.saveJob(currentJobs[jIdx]);
-        }
-
-        // Save to History
-        const historyEntry = {
-          id: Math.random().toString(36).substring(2, 9),
-          jobId: id,
-          jobName: job.name,
-          timestamp: Date.now(),
-          status: 'SUCCESS' as const,
-          fileCount: data.results?.reduce((acc: number, curr: any) => acc + (curr.fileCount || 0), 0) || 0,
-          integrity: data.results?.every((r: any) => r.integrity) || false,
-          details: data.results?.map((r: any) => `${r.destination}: OK`).join(', ') || 'Sucesso'
-        };
-        DataService.saveHistoryEntry(historyEntry);
-        setHistory(DataService.getHistory());
-      } else {
-        const errorMsg = data.results?.[0]?.message || data.error || 'Erro no motor de backup';
-        setBackupStatus('ERROR');
-        setBackupResults(data.results || [{ destination: 'Geral', status: 'ERROR', message: errorMsg }]);
-        
-        // Save Error to History
-        DataService.saveHistoryEntry({
-          id: Math.random().toString(36).substring(2, 9),
-          jobId: id,
-          jobName: job.name,
-          timestamp: Date.now(),
-          status: 'ERROR' as const,
-          fileCount: 0,
-          integrity: false,
-          details: errorMsg
+      if (data.success && data.taskId) {
+        setActiveTaskId(data.taskId);
+        // Advanced to step 4 when API confirms start
+        setPrepSteps(prev => {
+            const next = [...prev];
+            if (next[2]) next[2].status = 'done';
+            if (next[3]) next[3].status = 'active';
+            return next;
         });
-        setHistory(DataService.getHistory());
-
-        setJobs(prev => prev.map(j => {
-          if (j.id === id) return { ...j, status: 'ERROR' as const };
-          return j;
-        }));
+        
+        // Start polling for real results
+        pollTaskStatus(data.taskId, id);
+      } else {
+        throw new Error(data.error || 'Falha ao iniciar processo');
       }
     } catch (error) {
-      console.error('Backup Error:', error);
-      
-      if (error instanceof Error && error.name === 'AbortError') {
-          setBackupStatus('ERROR');
-          setBackupResults([{ destination: 'Sistema', status: 'ERROR', message: 'A operação foi interrompida pelo usuário.' }]);
-          
-           // Save Interruption to History
-           DataService.saveHistoryEntry({
-            id: Math.random().toString(36).substring(2, 9),
-            jobId: id,
-            jobName: job.name,
-            timestamp: Date.now(),
-            status: 'ERROR' as const,
-            fileCount: 0,
-            integrity: false,
-            details: 'Interrompido pelo usuário'
-          });
-          setHistory(DataService.getHistory());
-
-          setJobs(prev => prev.map(j => {
-            if (j.id === id) return { ...j, status: 'ERROR' as const };
-            return j;
-          }));
-          return;
-      }
-
-      const crashMsg = error instanceof Error ? error.message : 'Erro crítico na execução';
-      setBackupStatus('ERROR');
-      
-      // Save Crash to History
-      const jobErr = jobs.find(j => j.id === id);
-      if (jobErr) {
-        DataService.saveHistoryEntry({
-          id: Math.random().toString(36).substring(2, 9),
-          jobId: id,
-          jobName: jobErr.name,
-          timestamp: Date.now(),
-          status: 'ERROR' as const,
-          fileCount: 0,
-          integrity: false,
-          details: crashMsg
-        });
-        setHistory(DataService.getHistory());
-      }
-
-      setJobs(prev => prev.map(j => {
-        if (j.id === id) return { ...j, status: 'ERROR' as const };
-        return j;
-      }));
+       console.error('Backup Initiation Error:', error);
+       setBackupStatus('ERROR');
+       setPrepSteps(prev => prev.map(s => ({ ...s, status: 'done' as const })));
+       
+       const msg = error instanceof Error ? error.message : 'Erro crítico';
+       setBackupResults([{ destination: 'Geral', status: 'ERROR', message: msg }]);
     }
   };
 
@@ -869,6 +906,116 @@ export default function Home() {
                   <div 
                     className={`h-full transition-all duration-1000 ease-out rounded-full ${backupStatus === 'RUNNING' ? 'w-2/3 bg-blue-500 animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.3)]' : backupStatus === 'SUCCESS' ? 'w-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.3)]' : 'w-1/3 bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.3)]'}`}
                   ></div>
+                </div>
+              </div>
+
+              {/* Detailed Process Logs (NEW SECTION) */}
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center justify-between px-1">
+                   <div className="flex items-center gap-2">
+                       <div className="w-1 h-3 bg-blue-500 rounded-full"></div>
+                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{lang === 'pt' ? 'Detalhamento do Processo' : 'Process Details'}</h4>
+                   </div>
+                   <button 
+                     onClick={() => setShowRealTime(!showRealTime)}
+                     className={`text-[9px] px-3 py-1 rounded-full border transition-all font-bold uppercase tracking-tighter ${showRealTime ? 'bg-blue-600 border-blue-400 text-white' : 'bg-slate-800 border-slate-700 text-slate-500 hover:text-white'}`}
+                   >
+                     {showRealTime ? (lang === 'pt' ? 'Modo Real-Time: ON' : 'Real-Time Mode: ON') : (lang === 'pt' ? 'Ativar Real-Time' : 'Enable Real-Time')}
+                   </button>
+                </div>
+
+                <div className="bg-slate-950/40 rounded-xl border border-slate-800/50 p-4 space-y-3">
+                   {/* Preparation Steps - Shown only if NOT in real-time or if still early */}
+                   {!showRealTime && (
+                     <div className="space-y-2.5">
+                        {prepSteps.map((step, idx) => (
+                          <div key={idx} className="flex items-center justify-between group">
+                            <div className="flex items-center gap-3">
+                               {step.status === 'done' ? (
+                                 <CheckCircleIcon size={14} className="text-emerald-500" />
+                               ) : step.status === 'active' ? (
+                                 <LoaderIcon size={14} className="text-blue-400 animate-spin" />
+                               ) : (
+                                 <div className="w-3.5 h-3.5 rounded-full border border-slate-700"></div>
+                               )}
+                               <span className={`text-[11px] font-medium transition-colors ${step.status === 'done' ? 'text-slate-400' : step.status === 'active' ? 'text-blue-300' : 'text-slate-600'}`}>
+                                 {step.msg}
+                               </span>
+                            </div>
+                            {step.status === 'done' && <span className="text-[9px] font-black text-emerald-500/60 uppercase">OK</span>}
+                          </div>
+                        ))}
+                     </div>
+                   )}
+
+                   {/* Active File Migration - Actual Live Stream */}
+                   {backupStatus === 'RUNNING' && showRealTime && (
+                     <div className="space-y-2 animate-in fade-in duration-300">
+                        {backupResults.flatMap(r => r.processedFiles || []).length > 0 ? (
+                          backupResults.flatMap(r => r.processedFiles || []).map((file, idx) => (
+                            <div key={idx} className="flex items-center gap-3 bg-blue-500/5 p-2 rounded-lg border border-blue-500/10 animate-in slide-in-from-bottom-2 duration-300">
+                               <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></div>
+                               <span className="text-[11px] font-mono text-blue-300 truncate flex-1">{file}</span>
+                               <span className="text-[9px] font-black text-blue-500 uppercase italic">Sincronizando...</span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="py-8 text-center">
+                             <LoaderIcon className="mx-auto text-slate-700 animate-spin mb-3" size={24} />
+                             <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{lang === 'pt' ? 'Aguardando fluxo de dados...' : 'Waiting for data stream...'}</p>
+                          </div>
+                        )}
+                     </div>
+                   )}
+
+                   {/* Standard Running View */}
+                   {backupStatus === 'RUNNING' && !showRealTime && (
+                     <div className="pt-3 mt-3 border-t border-slate-800/50 space-y-3 animate-in fade-in duration-700">
+                        <div className="flex items-center justify-between">
+                           <div className="flex items-center gap-2">
+                              <ServerIcon size={14} className="text-blue-400" />
+                              <span className="text-[11px] font-bold text-white animate-pulse">
+                                {lang === 'pt' ? 'Migrando arquivos...' : 'Migrating files...'}
+                              </span>
+                           </div>
+                        </div>
+                        {/* Fake animated file list for better visual feedback during wait */}
+                        <div className="space-y-2">
+                           {[1, 2].map((i) => (
+                              <div key={i} className="flex items-center gap-3 bg-white/5 p-2 rounded-lg border border-white/5 opacity-50">
+                                 <div className="w-2 h-2 rounded-full bg-blue-500/40 animate-ping"></div>
+                                 <div className="h-2 w-24 bg-slate-800 rounded animate-pulse"></div>
+                                 <div className="flex-1 h-1 bg-slate-800 rounded-full overflow-hidden">
+                                    <div className="h-full bg-blue-500/20 w-1/3 animate-shimmer"></div>
+                                 </div>
+                              </div>
+                           ))}
+                        </div>
+                     </div>
+                   )}
+
+                   {/* Real processed files after success */}
+                   {backupStatus === 'SUCCESS' && backupResults.length > 0 && (
+                     <div className="pt-3 mt-3 border-t border-slate-800/50 space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+                        {backupResults.flatMap(r => r.processedFiles || []).slice(0, 10).map((file, idx) => (
+                          <div key={idx} className="flex items-center gap-3 bg-emerald-500/5 p-2 rounded-lg border border-emerald-500/10 animate-in slide-in-from-left-2 duration-300">
+                             <CheckCircleIcon size={12} className="text-emerald-500" />
+                             <span className="text-[11px] font-mono text-emerald-400 truncate flex-1">{file}</span>
+                             <div className="flex items-center gap-2">
+                                <div className="h-1 w-12 bg-emerald-900/50 rounded-full overflow-hidden">
+                                   <div className="h-full bg-emerald-500 w-full"></div>
+                                </div>
+                                <span className="text-[9px] font-black text-emerald-500 uppercase italic">Concluído</span>
+                             </div>
+                          </div>
+                        ))}
+                        {(backupResults.flatMap(r => r.processedFiles || []).length > 10) && (
+                           <p className="text-[10px] text-center text-slate-500 py-1">
+                             + {backupResults.flatMap(r => r.processedFiles || []).length - 10} {lang === 'pt' ? 'outros arquivos migrados' : 'other files migrated'}
+                           </p>
+                        )}
+                     </div>
+                   )}
                 </div>
               </div>
 

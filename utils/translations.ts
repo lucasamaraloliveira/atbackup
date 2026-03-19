@@ -175,7 +175,11 @@ export const translations = {
         dropbox: 'Dropbox',
         digitalocean: 'DigitalOcean Spaces',
         network: 'Network Shared Folder'
-      }
+      },
+      testConnectivity: 'Test Connectivity',
+      testConnection: 'Test Connection',
+      testSuccess: 'Connection Successful',
+      testFailed: 'Connection Failed'
     },
     history: {
       title: 'Execution History',
@@ -449,7 +453,11 @@ export const translations = {
         dropbox: 'Dropbox',
         digitalocean: 'DigitalOcean Spaces',
         network: 'Pasta Compartilhada de Rede'
-      }
+      },
+      testConnectivity: 'Testar Conectividade',
+      testConnection: 'Testar Conexão',
+      testSuccess: 'Conexão Bem-sucedida',
+      testFailed: 'Falha na Conexão'
     },
     history: {
       title: 'Histórico de Execuções',

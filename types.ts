@@ -120,3 +120,12 @@ export interface BackupHistory {
   details: string;
   userId?: string;
 }
+
+export interface BackupResult {
+  destination: string;
+  status: 'SUCCESS' | 'ERROR' | 'SUCCESS (MOCK)';
+  message?: string;
+  fileCount?: number;
+  integrity?: boolean;
+  processedFiles?: string[];
+}

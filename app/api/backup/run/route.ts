@@ -1,185 +1,247 @@
+
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import { BackupJob, Destination, DestinationType, SourceType } from '@/types';
+import { spawn } from 'child_process';
+import { BackupJob, Destination, DestinationType, SourceType, BackupResult } from '@/types';
+import { TaskService } from '@/lib/tasks';
+import { existsSync } from 'fs';
 
-const execAsync = promisify(exec);
-
-export async function POST(request: NextRequest) {
-  try {
-    const { job, destinations }: { job: BackupJob; destinations: Destination[] } = await request.json();
-
-    if (!job || !destinations || destinations.length === 0) {
-      return NextResponse.json({ error: 'Dados inválidos' }, { status: 400 });
-    }
-
-    const results = [];
-
-    for (const dest of destinations) {
-      if (dest.type === DestinationType.LOCAL) {
-        try {
-          // Prepare paths for Windows and escape single quotes for PowerShell
-          // Remove trailing backslash to avoid PowerShell -LiteralPath issues
-          let source = job.sourcePath.trim().replace(/\//g, '\\');
-          if (source.endsWith('\\') && source.length > 3) {
-            source = source.slice(0, -1);
-          }
-          const escapedSource = source.replace(/'/g, "''");
-          const destBase = dest.pathOrBucket.trim().replace(/\//g, '\\');
-          
-          // Create a specific folder for the job in the destination with dd-MM-YYYY_HHmmss format
-          const now = new Date();
-          const day = String(now.getDate()).padStart(2, '0');
-          const month = String(now.getMonth() + 1).padStart(2, '0');
-          const year = now.getFullYear();
-          const hours = String(now.getHours()).padStart(2, '0');
-          const minutes = String(now.getMinutes()).padStart(2, '0');
-          const seconds = String(now.getSeconds()).padStart(2, '0');
-          const timestamp = `${day}-${month}-${year}_${hours}${minutes}${seconds}`;
-          const sanitizedJobName = job.name.replace(/[<>:"/\\|?*]/g, '_');
-          const jobFolderName = `${sanitizedJobName}_${timestamp}`;
-          const finalDest = `${destBase}\\${jobFolderName}`.replace(/'/g, "''");
-
-          const setupEncoding = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = \'Stop\';';
-          let scriptBody = '';
-          
-          if (job.sourceType === SourceType.DIRECTORY || job.sourceType === SourceType.FILE) {
-             if (job.compress) {
-                 const zipDest = `${destBase}\\${jobFolderName}.zip`.replace(/'/g, "''");
-                 scriptBody = `
-                 if (!(Test-Path -LiteralPath '${escapedSource}')) { 
-                   $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name; 
-                   $drives = Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Name + ':' }; 
-                   throw ('Origem nao encontrada: ${escapedSource} (User: ' + $user + ' | Drives: ' + ($drives -join ', ') + ')') 
-                 }; 
-                 $originCount = (Get-ChildItem -LiteralPath '${escapedSource}' ${job.sourceType === SourceType.DIRECTORY ? '-Recurse' : ''} -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count; 
-                 if ($originCount -eq $null) { $originCount = 0 };
-                 
-                 Write-Output "COUNT:$originCount"; 
-                 
-                 $zipDest = '${zipDest}';
-                 if (Test-Path -LiteralPath $zipDest) { Remove-Item -LiteralPath $zipDest -Force | Out-Null };
-                 
-                 Compress-Archive -LiteralPath '${escapedSource}' -DestinationPath $zipDest -Force -ErrorAction Stop;
-                 
-                 if (Test-Path -LiteralPath $zipDest) { 
-                   Write-Output "INTEGRITY:OK";
-                   Write-Output "FILE:${jobFolderName}.zip";
-                 } else { throw 'Erro na compactacao: Arquivo zip nao encontrado' }; `;
-             } else {
-               scriptBody = `
-                 if (!(Test-Path -LiteralPath '${escapedSource}')) { 
-                   $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name; 
-                   $drives = Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Name + ':' }; 
-                   throw ('Origem nao encontrada: ${escapedSource} (User: ' + $user + ' | Drives: ' + ($drives -join ', ') + ')') 
-                 }; 
-                 $originCount = (Get-ChildItem -LiteralPath '${escapedSource}' ${job.sourceType === SourceType.DIRECTORY ? '-Recurse' : ''} -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count; 
-                 if ($originCount -eq $null) { $originCount = 0 };
-                 Write-Output "COUNT:$originCount"; 
-                 if (Test-Path -LiteralPath '${finalDest}') { Remove-Item -LiteralPath '${finalDest}' -Recurse -Force | Out-Null };
-                 New-Item -ItemType Directory -Force -Path '${finalDest}' -ErrorAction Stop | Out-Null; 
-                 Copy-Item -LiteralPath '${escapedSource}' -Destination '${finalDest}' -Force -ErrorAction Stop ${job.sourceType === SourceType.DIRECTORY ? '-Recurse' : ''}; 
-                 $destCount = (Get-ChildItem -LiteralPath '${finalDest}' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object).Count; 
-                 if ($destCount -eq $null) { $destCount = 0 };
-                 if ($originCount -eq $destCount) { 
-                   Write-Output "INTEGRITY:OK";
-                   Get-ChildItem -LiteralPath '${finalDest}' -Recurse | ForEach-Object { 
-                     $rel = $_.FullName.Substring('${finalDest}'.Length).TrimStart('\\');
-                     if ($rel) { Write-Output "FILE:$rel" }
-                   };
-                 } else { throw ('FALHA_INTEGRIDADE: Origem(' + $originCount + ') vs Destino(' + $destCount + ')') }; `;
-             }
-          } else {
-            const extension = job.sourceType === SourceType.DATABASE_SQLSERVER ? 'bak' : 'sql';
-            const dbRef = (job.dbCredentials?.useIndividualFields && job.dbCredentials?.database) ? job.dbCredentials.database : job.sourcePath;
-            const sanitizedDbName = dbRef.replace(/[<>:"/\\|?*@]/g, '_');
-            const fileName = `backup_${sanitizedDbName}.${extension}`;
-            
-            scriptBody = `
-               New-Item -ItemType Directory -Force -Path '${finalDest}' -ErrorAction Stop | Out-Null; 
-               Set-Content -LiteralPath '${finalDest}\\${fileName}' -Value 'SECURE_DATA_BLOCK_${Date.now()}' -ErrorAction Stop; 
-               Write-Output "COUNT:1"; 
-               if (Test-Path -LiteralPath '${finalDest}\\${fileName}') { 
-                 Write-Output "INTEGRITY:OK";
-                 Write-Output "FILE:${fileName}";
-               } else { throw 'Erro ao gravar arquivo no destino' }; `;
-          }
-
-const fullScript = `try { ${setupEncoding} ${scriptBody} } catch { $m = $_.Exception.Message; Write-Output "FATAL_ERROR:$m"; Write-Error $m; exit 1; }`;
-          
-          // Use Base64 to avoid all shell escaping issues
-          const encodedScript = Buffer.from(fullScript, 'utf16le').toString('base64');
-          const cmd = `chcp 65001 > nul && powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encodedScript}`;
-          
-          const { stdout, stderr } = await execAsync(cmd, { encoding: 'utf8' });
-          
-          const fileCountMatch = stdout.match(/COUNT:(\d+)/);
-          const integrityMatch = stdout.match(/INTEGRITY:OK/);
-          const processedFiles = stdout.split('\n')
-            .filter(line => line.startsWith('FILE:'))
-            .map(line => line.substring(5).trim());
-          
-          results.push({ 
-            destination: dest.name, 
-            status: 'SUCCESS', 
-            fileCount: fileCountMatch ? parseInt(fileCountMatch[1]) : 0,
-            integrity: !!integrityMatch,
-            processedFiles
-          });
-        } catch (error: any) {
-          console.error(`Error backing up to ${dest.name}:`, error);
-          
-          let cleanMessage = 'Erro desconhecido durante a migração';
-          
-          // 1. Try to find our custom FATAL_ERROR marker in stdout (most reliable)
-          if (error.stdout && error.stdout.includes('FATAL_ERROR:')) {
-              cleanMessage = error.stdout.split('FATAL_ERROR:')[1].split('\n')[0].trim();
-          } 
-          // 2. Otherwise parse stderr
-          else if (error.stderr) {
-              let stderr = error.stderr.replace(/#<\s*CLIXML[\s\S]*/, '').trim();
-              const lines = stderr.split('\n').filter((l: string) => l.trim() && !l.includes('chcp'));
-              
-              const writeErrLine = lines.find((l: string) => l.includes('Write-Error :') || l.includes('Write-Error:'));
-              if (writeErrLine) {
-                  cleanMessage = writeErrLine.split(/Write-Error\s*:/i)[1].trim();
-              } else if (lines.length > 0) {
-                  cleanMessage = lines[0].trim();
-              }
-          }
-          
-          // Remove common tech debris and artifacts
-          cleanMessage = cleanMessage
-            .replace(/^['"\(]+/, '') // Remove leading quotes or parentheses
-            .replace(/['"\)]+$/, '') // Remove trailing quotes or parentheses
-            .split('at line:1')[0]
-            .split('No linha:1')[0]
-            .split('--->')[1] || cleanMessage.split('--->')[0]; // Prefer the part after ---> if it exists (usually the inner exception)
-            
-          cleanMessage = cleanMessage.trim();
-          
-          if (!cleanMessage || cleanMessage.includes('powershell.exe') || cleanMessage.length < 2) {
-              cleanMessage = 'Falha técnica no script de backup (Verifique permissões e caminhos)';
-          }
-
-          results.push({ destination: dest.name, status: 'ERROR', message: cleanMessage });
-        }
-      } else {
-        // Mock remote backup for now
-        results.push({ destination: dest.name, status: 'SUCCESS (MOCK)', message: 'Remote backup simulated' });
-      }
-    }
-
-    const hasError = results.some(r => r.status === 'ERROR');
+// Helper to find rclone binary
+const getRcloneBinary = () => {
+    const wingetPath = `${process.env.LOCALAPPDATA}\\Microsoft\\WinGet\\Packages\\Rclone.Rclone_Microsoft.Winget.Source_8wekyb3d8bbwe\\rclone-v1.73.2-windows-amd64\\rclone.exe`;
+    if (existsSync(wingetPath)) return wingetPath;
     
-    return NextResponse.json({ 
-      success: !hasError, 
-      results,
-      lastRun: Date.now()
+    if (existsSync('C:\\Program Files\\rclone\\rclone.exe')) return 'C:\\Program Files\\rclone\\rclone.exe';
+    
+    return 'rclone'; // Use PATH as last resort
+};
+
+// Background execution "engine"
+// Background execution "engine"
+async function runBackupTask(taskId: string, job: BackupJob, destinations: Destination[]) {
+    const results: BackupResult[] = [];
+    let overallSuccess = true;
+
+    // Em vez de um loop 'for' sequencial, disparamos todos em paralelo
+    const backupPromises = destinations.map(async (dest) => {
+        try {
+            let source = job.sourcePath.trim().replace(/\//g, '\\');
+            if (source.endsWith('\\') && source.length > 3) source = source.slice(0, -1);
+            
+            const sanitizedJobName = job.name.replace(/[<>:"/\\|?*]/g, '_');
+            
+            // Determine if it's a file or directory for local tools
+            let sourceDir = source;
+            let fileMatch = '/E';
+
+            if (job.sourceType === SourceType.FILE) {
+                const lastBackslash = source.lastIndexOf('\\');
+                if (lastBackslash !== -1) {
+                    sourceDir = source.substring(0, lastBackslash);
+                    fileMatch = source.substring(lastBackslash + 1);
+                }
+            }
+
+            if (dest.type === DestinationType.LOCAL || dest.type === DestinationType.NETWORK) {
+                const destBase = dest.pathOrBucket.trim().replace(/\//g, '\\');
+                const finalDest = `${destBase}\\${sanitizedJobName}`;
+
+                // Ensure destination exists
+                const mkdir = spawn('powershell', ['-Command', `if (!(Test-Path -Path '${finalDest}')) { New-Item -ItemType Directory -Path '${finalDest}' -Force }`]);
+                await new Promise(r => mkdir.on('close', r));
+
+                const args = [
+                    sourceDir,
+                    finalDest,
+                    fileMatch,
+                    '/Z', '/R:5', '/W:5', '/MT:32', '/V', '/NP', '/TS', '/FP',
+                    '/FFT' // Fix for timestamp precision issues
+                ];
+
+                if (job.backupType === 'Incremental') {
+                     args.push('/XO'); 
+                } else if (job.backupType === 'Differential') {
+                     args.push('/A'); 
+                } else if (job.backupType === 'Full') {
+                     args.push('/IS'); 
+                }
+
+                const robocopy = spawn('robocopy', args);
+                TaskService.registerProcess(taskId, robocopy);
+
+                const currentProcessed: string[] = [];
+                let stdout = '';
+
+                robocopy.stdout.on('data', (data) => {
+                    const chunk = data.toString();
+                    stdout += chunk;
+                    
+                    // Live parsing for real-time visibility
+                    const lines = chunk.split('\r\n');
+                    for (const line of lines) {
+                        const l = line.trim();
+                        if (l.includes('\t') && !l.includes('*SAME*') && !l.includes('Skipped') && !l.includes('Extra File')) {
+                            const fileName = l.split('\t').pop()?.trim();
+                            if (fileName && fileName.length > 3 && !currentProcessed.includes(fileName)) {
+                                currentProcessed.push(fileName);
+                                // Update Task in real-time
+                                TaskService.updateTask(taskId, { processedFiles: [...currentProcessed].slice(-10) });
+                            }
+                        }
+                    }
+                });
+
+                const exitCode = await new Promise<number>((resolve) => {
+                    robocopy.on('close', (code) => resolve(code || 0));
+                });
+
+                const isSuccess = exitCode < 8;
+                const finalProcessed = stdout.split('\r\n')
+                    .filter(line => {
+                        const l = line.trim();
+                        return l.includes('\t') && !l.includes('*SAME*') && !l.includes('Skipped') && !l.includes('Extra File');
+                    })
+                    .map(line => line.trim())
+                    .filter(line => line.length > 0);
+                
+                results.push({
+                    destination: dest.name,
+                    status: isSuccess ? 'SUCCESS' : 'ERROR',
+                    fileCount: finalProcessed.length,
+                    integrity: isSuccess,
+                    processedFiles: finalProcessed.slice(0, 500)
+                });
+
+                if (!isSuccess) overallSuccess = false;
+
+            } else {
+                // Cloud / Modern Dest (Using rclone as engine)
+                const bucket = dest.pathOrBucket;
+                const creds = dest.credentials || {};
+                
+                // Using flags instead of colon-syntax for better reliability on Windows
+                const args = [
+                    'copy', 
+                    source, 
+                    `:s3:${bucket}/${sanitizedJobName}`,
+                    '--progress',
+                    '--stats', '1s',
+                    '-v' // Verbose
+                ];
+
+                if (dest.type === DestinationType.WASABI || dest.type === DestinationType.AWS || dest.type === DestinationType.DIGITALOCEAN) {
+                    const provider = dest.type === DestinationType.WASABI ? 'Wasabi' : 
+                                   dest.type === DestinationType.DIGITALOCEAN ? 'DigitalOcean' : 'AWS';
+                    
+                    args.push('--s3-provider', provider);
+                    if (creds.accessKeyId) args.push('--s3-access-key-id', creds.accessKeyId);
+                    if (creds.secretAccessKey) args.push('--s3-secret-access-key', creds.secretAccessKey);
+                    if (creds.region) args.push('--s3-region', creds.region || 'us-east-1');
+                    
+                    const endpoint = creds.endpoint || (dest.type === DestinationType.WASABI ? 's3.wasabisys.com' : '');
+                    if (endpoint) args.push('--s3-endpoint', endpoint);
+                }
+
+                if (job.backupType === 'Incremental') args.push('--update');
+                
+                const rclone = spawn(getRcloneBinary(), args);
+                TaskService.registerProcess(taskId, rclone);
+
+                let stderr = '';
+                const currentProcessed: string[] = [];
+
+                // Helper to add file and update UI
+                const addProcessedFile = (fileName: string) => {
+                    if (fileName && !currentProcessed.includes(fileName)) {
+                        currentProcessed.push(fileName);
+                        TaskService.updateTask(taskId, { processedFiles: [...currentProcessed].slice(-10) });
+                    }
+                };
+
+                rclone.stderr.on('data', (data) => { 
+                    const chunk = data.toString();
+                    stderr += chunk; 
+                    
+                    // rclone often sends INFO messages to stderr
+                    const lines = chunk.split('\n');
+                    for (const line of lines) {
+                        const l = line.trim();
+                        // Parse "INFO  : file.txt: Copied (new)" or similar
+                        if (l.includes('INFO') && l.includes(':') && (l.includes('Copied') || l.includes('Succeeded'))) {
+                            const parts = l.split('INFO')[1].split(':');
+                            if (parts.length >= 2) {
+                                const fileName = parts[1].trim();
+                                addProcessedFile(fileName);
+                            }
+                        }
+                    }
+                });
+
+                rclone.stdout.on('data', (data) => {
+                    const chunk = data.toString();
+                    const lines = chunk.split('\n');
+                    for (const line of lines) {
+                        const l = line.trim();
+                        // Progress line: "* test.txt: 0%"
+                        if (l.startsWith('*') && l.includes(':')) {
+                            const fileName = l.split(':')[0].substring(1).trim();
+                            addProcessedFile(fileName);
+                        }
+                    }
+                });
+
+                const exitCode = await new Promise<number>((resolve) => {
+                    rclone.on('close', (code) => resolve(code || 0));
+                });
+
+                const isSuccess = exitCode === 0;
+                results.push({ 
+                    destination: dest.name, 
+                    status: isSuccess ? 'SUCCESS' : 'ERROR', 
+                    message: isSuccess ? 'Sincronizado via rclone' : `Erro rclone: ${stderr.slice(0, 100)}`,
+                    fileCount: currentProcessed.length,
+                    processedFiles: currentProcessed
+                });
+
+                if (!isSuccess) overallSuccess = false;
+            }
+
+        } catch (err: any) {
+            results.push({ destination: dest.name, status: 'ERROR', message: err.message });
+            overallSuccess = false;
+        }
     });
 
-  } catch (error) {
-    console.error('Backup API Internal Error:', error);
-    return NextResponse.json({ error: 'Falha interna no motor de backup' }, { status: 500 });
-  }
+    // Aguardar todas as conclusões em paralelo
+    await Promise.all(backupPromises);
+
+    TaskService.updateTask(taskId, {
+        status: overallSuccess ? 'SUCCESS' : 'ERROR',
+        results,
+        endTime: Date.now()
+    });
+}
+
+export async function POST(request: NextRequest) {
+    try {
+        const { job, destinations }: { job: BackupJob; destinations: Destination[] } = await request.json();
+
+        if (!job || !destinations || destinations.length === 0) {
+            return NextResponse.json({ error: 'Dados inválidos' }, { status: 400 });
+        }
+
+        const task = TaskService.createTask(job.id);
+
+        // Run in background
+        runBackupTask(task.id, job, destinations);
+
+        return NextResponse.json({ 
+            success: true, 
+            taskId: task.id,
+            message: 'Backup iniciado em segundo plano.'
+        });
+
+    } catch (error) {
+        console.error('Backup API Error:', error);
+        return NextResponse.json({ error: 'Erro interno' }, { status: 500 });
+    }
 }

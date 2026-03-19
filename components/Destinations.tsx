@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Destination, DestinationType, Language } from '../types';
-import { Plus, Trash2, Cloud, Search, Edit, HardDrive, Server, Network, Download, X, Lock, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, Cloud, Search, Edit, HardDrive, Server, Network, Download, X, Lock, ChevronDown, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { useTranslation } from '../utils/translations';
 // FileBrowser remove
 
@@ -36,6 +36,10 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
   // Mount Modal State
   const [mountModalDest, setMountModalDest] = useState<Destination | null>(null);
   const [showProviderSelect, setShowProviderSelect] = useState(false);
+
+  // Testing Connectivity State
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; id?: string } | null>(null);
 
   // State for the form
   const [newDest, setNewDest] = useState<Partial<Destination>>({
@@ -93,6 +97,25 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
 
   const handlePathSelect = (path: string) => {
     setNewDest(prev => ({ ...prev, pathOrBucket: path }));
+  };
+
+  const handleTest = async (destToTest: Partial<Destination>) => {
+    setTestingId(destToTest.id || 'new');
+    setTestResult(null);
+
+    try {
+      const response = await fetch('/api/destinations/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(destToTest)
+      });
+      const data = await response.json();
+      setTestResult({ ...data, id: destToTest.id || 'new' });
+    } catch (error) {
+      setTestResult({ success: false, message: 'Erro de comunicação com o servidor', id: destToTest.id || 'new' });
+    } finally {
+      setTestingId(null);
+    }
   };
 
   const handleNativeBrowse = async () => {
@@ -492,9 +515,32 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
 
           </div>
 
-          <div className="flex justify-end space-x-3 mt-6 pt-4 border-t border-slate-700/50">
-            <button onClick={resetForm} className="px-4 py-2 text-slate-400 hover:text-white transition-colors">{t.destinations.cancel}</button>
-            <button onClick={handleSave} className="px-6 py-2 bg-green-600 hover:bg-green-500 rounded text-white transition-colors font-medium">{t.destinations.save}</button>
+          {testResult && (
+            <div className={`mt-4 p-3 rounded-lg flex items-start gap-3 border ${testResult.success ? 'bg-emerald-900/30 border-emerald-500/30 text-emerald-400' : 'bg-red-900/30 border-red-500/30 text-red-400'}`}>
+               <div className="mt-0.5">
+                  {testResult.success ? <CheckCircle size={18}/> : <AlertTriangle size={18}/>}
+               </div>
+               <div>
+                  <p className="text-xs font-bold uppercase tracking-tight">{testResult.success ? t.destinations.testSuccess : t.destinations.testFailed}</p>
+                  <p className="text-[11px] opacity-80">{testResult.message}</p>
+               </div>
+               <button onClick={() => setTestResult(null)} className="ml-auto text-slate-500 hover:text-white"><X size={14}/></button>
+            </div>
+          )}
+
+          <div className="flex justify-between items-center mt-6 pt-4 border-t border-slate-700/50">
+            <button 
+              onClick={() => handleTest(newDest)} 
+              disabled={!!testingId}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold uppercase border transition-all ${testingId === 'new' ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-blue-600/10 text-blue-400 border-blue-500/30 hover:bg-blue-600/20'}`}
+            >
+              {testingId === 'new' ? <Loader2 size={14} className="animate-spin" /> : <Server size={14} />}
+              {t.destinations.testConnectivity}
+            </button>
+            <div className="space-x-3">
+              <button onClick={resetForm} className="px-4 py-2 text-slate-400 hover:text-white transition-colors">{t.destinations.cancel}</button>
+              <button onClick={handleSave} className="px-6 py-2 bg-green-600 hover:bg-green-500 rounded text-white transition-colors font-medium">{t.destinations.save}</button>
+            </div>
           </div>
         </div>
       )}
@@ -518,6 +564,14 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
                     <Network size={16} />
                   </button>
                 )}
+                <button 
+                  onClick={() => handleTest(dest)} 
+                  disabled={!!testingId}
+                  className={`p-2 rounded transition-colors ${testingId === dest.id ? 'text-amber-400 bg-amber-900/40' : 'text-slate-500 hover:text-amber-400 hover:bg-amber-900/20'}`} 
+                  title={t.destinations.testConnection}
+                >
+                  {testingId === dest.id ? <Loader2 size={16} className="animate-spin" /> : <Server size={16} />}
+                </button>
                 <button onClick={() => handleEdit(dest)} className="p-2 text-slate-500 hover:text-blue-400 hover:bg-blue-900/20 rounded transition-colors" title={t.jobs.edit}>
                   <Edit size={16} />
                 </button>
@@ -537,6 +591,16 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
                 <p className="text-slate-500 text-xs px-1">Region: {dest.credentials.region}</p>
               )}
             </div>
+
+            {/* Quick Test Feedback for Cards */}
+            {testResult && testResult.id === dest.id && testingId !== dest.id && (
+                <div className="mt-3 py-1.5 px-3 bg-slate-900 rounded border border-slate-700 flex items-center gap-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                    {testResult.success ? <CheckCircle size={12} className="text-emerald-500" /> : <AlertTriangle size={12} className="text-red-500" />}
+                    <span className={`text-[10px] font-bold truncate ${testResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {testResult.message}
+                    </span>
+                </div>
+            )}
           </div>
         ))}
       </div>
