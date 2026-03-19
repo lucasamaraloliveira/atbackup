@@ -40,6 +40,7 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
   // Testing Connectivity State
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; id?: string } | null>(null);
+  const [isInstalling, setIsInstalling] = useState(false);
 
   // Drive Selection for Mount
   const [selectedLetter, setSelectedLetter] = useState('M');
@@ -131,6 +132,19 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
       }
     } catch (error) {
       console.error('Failed to open native browser', error);
+    }
+  };
+
+  const handleSetupRclone = async () => {
+    setIsInstalling(true);
+    try {
+        const response = await fetch('/api/setup/rclone', { method: 'POST' });
+        const data = await response.json();
+        alert(data.message || 'Setup concluído!');
+    } catch (error) {
+        alert('Erro ao rodar setup automágico.');
+    } finally {
+        setIsInstalling(false);
     }
   };
 
@@ -520,7 +534,18 @@ const Destinations: React.FC<DestinationsProps> = ({ destinations, onAdd, onDele
       )}
 
       <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold">{t.destinations.title}</h2>
+        <div className="flex items-center gap-4">
+            <h2 className="text-2xl font-bold">{t.destinations.title}</h2>
+            <button
+                onClick={handleSetupRclone}
+                disabled={isInstalling}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all border ${isInstalling ? 'bg-amber-900/40 text-amber-500 border-amber-500/30' : 'bg-slate-800/50 text-slate-400 border-slate-700 hover:border-amber-500 hover:text-amber-400'}`}
+                title="Configurar Rclone nesta máquina"
+            >
+                {isInstalling ? <Loader2 size={12} className="animate-spin" /> : <Server size={12} />}
+                {isInstalling ? 'Instalando Rclone...' : 'Configurar Rclone Automagicamente'}
+            </button>
+        </div>
         {!isAdding && (
           <button
             onClick={() => setIsAdding(true)}

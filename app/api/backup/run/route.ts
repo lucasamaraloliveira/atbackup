@@ -5,15 +5,7 @@ import { BackupJob, Destination, DestinationType, SourceType, BackupResult } fro
 import { TaskService } from '@/lib/tasks';
 import { existsSync } from 'fs';
 
-// Helper to find rclone binary
-const getRcloneBinary = () => {
-    const wingetPath = `${process.env.LOCALAPPDATA}\\Microsoft\\WinGet\\Packages\\Rclone.Rclone_Microsoft.Winget.Source_8wekyb3d8bbwe\\rclone-v1.73.2-windows-amd64\\rclone.exe`;
-    if (existsSync(wingetPath)) return wingetPath;
-    
-    if (existsSync('C:\\Program Files\\rclone\\rclone.exe')) return 'C:\\Program Files\\rclone\\rclone.exe';
-    
-    return 'rclone'; // Use PATH as last resort
-};
+import { getRcloneBinary } from '@/lib/rclone-utils';
 
 // Background execution "engine"
 // Background execution "engine"
@@ -154,7 +146,18 @@ async function runBackupTask(taskId: string, job: BackupJob, destinations: Desti
 
                 if (job.backupType === 'Incremental') args.push('--update');
                 
-                const rclone = spawn(getRcloneBinary(), args);
+                const rcloneBin = getRcloneBinary();
+                const rclone = spawn(rcloneBin, args);
+                
+                // CRITICAL: Handle spawn errors to prevent app-wide crash
+                rclone.on('error', (err: any) => {
+                    console.error('[SPAWN ERROR] rclone:', err);
+                    TaskService.updateTask(taskId, { 
+                        status: 'ERROR', 
+                        error: `Rclone not found: ${err.message}. Certifique-se de que o Rclone está instalado no PATH ou em C:\\Program Files\\rclone\\rclone.exe` 
+                    });
+                });
+
                 TaskService.registerProcess(taskId, rclone);
 
                 let stderr = '';
@@ -201,6 +204,7 @@ async function runBackupTask(taskId: string, job: BackupJob, destinations: Desti
                 });
 
                 const exitCode = await new Promise<number>((resolve) => {
+                    rclone.on('error', () => resolve(-1));
                     rclone.on('close', (code) => resolve(code || 0));
                 });
 

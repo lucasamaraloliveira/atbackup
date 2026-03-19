@@ -1,1 +1,1 @@
-C:\Users\Lucas\AppData\Local\Microsoft\WinGet\Packages\Rclone.Rclone_Microsoft.Winget.Source_8wekyb3d8bbwe\rclone-v1.73.2-windows-amd64\rclone.exe
+﻿D:\AlrionTech\Portifólio\atbackup\bin\rclone\rclone.exe

@@ -3,15 +3,7 @@ import { spawn } from 'child_process';
 import { Destination, DestinationType } from '@/types';
 import { existsSync } from 'fs';
 
-// Helper to find rclone binary
-const getRcloneBinary = () => {
-    const wingetPath = `${process.env.LOCALAPPDATA}\\Microsoft\\WinGet\\Packages\\Rclone.Rclone_Microsoft.Winget.Source_8wekyb3d8bbwe\\rclone-v1.73.2-windows-amd64\\rclone.exe`;
-    if (existsSync(wingetPath)) return wingetPath;
-    
-    if (existsSync('C:\\Program Files\\rclone\\rclone.exe')) return 'C:\\Program Files\\rclone\\rclone.exe';
-    
-    return 'rclone'; // Use PATH as last resort
-};
+import { getRcloneBinary } from '@/lib/rclone-utils';
 
 export async function POST(request: NextRequest) {
     try {
@@ -30,6 +22,7 @@ export async function POST(request: NextRequest) {
             check.stdout.on('data', (data) => { output += data.toString(); });
 
             const exitCode = await new Promise<number>((resolve) => {
+                check.on('error', () => resolve(-1));
                 check.on('close', (code) => resolve(code || 0));
             });
 
@@ -72,12 +65,21 @@ export async function POST(request: NextRequest) {
             }
 
             // Try to list the bucket (limit to 1 item for speed)
-            const check = spawn(getRcloneBinary(), args);
+            const rcloneBin = getRcloneBinary();
+            const { isRcloneInstalled } = require('@/lib/rclone-utils');
+            await isRcloneInstalled(); // This will trigger the logs
+            const check = spawn(rcloneBin, args);
+            
+            // CRITICAL: Handle spawn errors to prevent app-wide crash
+            check.on('error', (err: any) => {
+                console.error('[SPAWN ERROR] rclone (test):', err);
+            });
             
             let stderr = '';
             check.stderr.on('data', (data) => { stderr += data.toString(); });
 
             const exitCode = await new Promise<number>((resolve) => {
+                check.on('error', () => resolve(-1));
                 check.on('close', (code) => resolve(code || 0));
             });
 
